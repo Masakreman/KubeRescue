@@ -23,3 +23,32 @@ go.work.sum
 
 # env file
 .env
+
+# Ignore terraform files in the terraform directory
+/terraform/*.tfstate
+/terraform/*.tfstate.backup
+/terraform/*.tfstate.backup.*
+/terraform/.terraform/
+/terraform/.terraform.lock.hcl
+
+# Ignore override files as they are usually used to override resources locally and should not be committed
+/terraform/override.tf
+/terraform/override.tf.json
+/terraform/*_override.tf
+/terraform/*_override.tf.json
+
+# Ignore CLI configuration files
+/terraform/.terraformrc
+/terraform/terraform.rc
+
+# Ignore crash logs
+/terraform/crash.log
+
+# Ignore plan files
+/terraform/*.tfplan
+
+# Ignore module directories
+/terraform/.terraform/modules/
+
+# Ignore sensitive variable files
+/terraform/*.auto.tfvars
