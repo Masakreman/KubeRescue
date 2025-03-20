@@ -1,198 +1,132 @@
+/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-// LogRemediation defines a log remediation resource
-type LogRemediation struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   LogRemediationSpec   `json:"spec"`
-	Status LogRemediationStatus `json:"status,omitempty"`
-}
-
 // LogRemediationSpec defines the desired state of LogRemediation
 type LogRemediationSpec struct {
-	// Target defines the application to monitor
-	Target TargetRef `json:"target"`
+	// Sources defines the sources to collect logs from
+	// +kubebuilder:validation:Required
+	Sources []LogSource `json:"sources"`
 
-	// LogPatterns define the log patterns to match
-	LogPatterns []LogPattern `json:"logPatterns"`
+	// ElasticsearchConfig defines the Elasticsearch connection details
+	// +kubebuilder:validation:Required
+	ElasticsearchConfig ElasticsearchConfig `json:"elasticsearchConfig"`
 
-	// RemediationActions define actions to take on match
-	RemediationActions []RemediationAction `json:"remediationActions"`
-
-	// AlertConfig defines alerting configuration
-	AlertConfig *AlertConfig `json:"alertConfig,omitempty"`
-
-	// RunbookRef references a runbook to use for remediation
-	RunbookRef *RunbookRef `json:"runbookRef,omitempty"`
+	// FluentbitConfig defines the Fluentbit configuration
+	// +kubebuilder:validation:Optional
+	FluentbitConfig *FluentbitConfig `json:"fluentbitConfig,omitempty"`
 }
 
-// TargetRef defines the target for log remediation
-type TargetRef struct {
-	// Kind of the target resource
-	Kind string `json:"kind"`
-
-	// Name of the target resource
-	Name string `json:"name"`
-
-	// Container to monitor logs from, if applicable
-	Container string `json:"container,omitempty"`
-
-	// LogSourceType specifies the type of log source
-	LogSourceType string `json:"logSourceType"`
-
-	// LogPath specifies where logs are located
-	// Empty means use standard output
-	LogPath string `json:"logPath,omitempty"`
-}
-
-// LogPattern defines a pattern to match in logs
-type LogPattern struct {
-	// Name of the pattern
-	Name string `json:"name"`
-
-	// Pattern to match, can be regex
-	Pattern string `json:"pattern"`
-
-	// Severity of the issue
-	Severity string `json:"severity"`
-
-	// Description of the pattern/issue
-	Description string `json:"description,omitempty"`
-
-	// Type of the log (JSON, Plain)
-	LogType string `json:"logType"`
-}
-
-// RemediationAction defines an action to take
-type RemediationAction struct {
-	// Type of remediation action
+// LogSource defines a source to collect logs from
+type LogSource struct {
+	// Type of log source (pod, deployment, namespace)
+	// +kubebuilder:validation:Enum=pod;deployment;namespace
+	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// Parameters for the action
-	Parameters map[string]string `json:"parameters,omitempty"`
+	// Selector to match resources
+	// +kubebuilder:validation:Required
+	Selector map[string]string `json:"selector"`
 
-	// When to execute this action
-	When *RemediationCondition `json:"when,omitempty"`
+	// Container to collect logs from (optional, if not specified collect from all containers)
+	// +kubebuilder:validation:Optional
+	Container string `json:"container,omitempty"`
 
-	// Timeout for the action
-	Timeout *metav1.Duration `json:"timeout,omitempty"`
+	// Path to logfiles if using a custom log path
+	// +kubebuilder:validation:Optional
+	Path string `json:"path,omitempty"`
 }
 
-// RemediationCondition defines when to execute a remediation
-type RemediationCondition struct {
-	// PatternMatches is the name of the pattern that must match
-	PatternMatches string `json:"patternMatches,omitempty"`
+// ElasticsearchConfig defines the Elasticsearch connection details
+type ElasticsearchConfig struct {
+	// Host of the Elasticsearch cluster
+	// +kubebuilder:validation:Required
+	Host string `json:"host"`
 
-	// Occurrences is the number of times the pattern must match
-	Occurrences int `json:"occurrences,omitempty"`
+	// Port of the Elasticsearch cluster
+	// +kubebuilder:default=9200
+	// +kubebuilder:validation:Optional
+	Port int32 `json:"port,omitempty"`
 
-	// TimeWindow is the time window for occurrences
-	TimeWindow *metav1.Duration `json:"timeWindow,omitempty"`
+	// Index to store logs in
+	// +kubebuilder:validation:Required
+	Index string `json:"index"`
+
+	// SecretRef for authentication (optional)
+	// +kubebuilder:validation:Optional
+	SecretRef string `json:"secretRef,omitempty"`
 }
 
-// AlertConfig defines the alerting configuration
-type AlertConfig struct {
-	// Provider is the alert provider to use
-	Provider string `json:"provider"`
+// FluentbitConfig defines optional custom Fluentbit configuration
+type FluentbitConfig struct {
+	// BufferSize for Fluentbit
+	// +kubebuilder:default=5MB
+	// +kubebuilder:validation:Optional
+	BufferSize string `json:"bufferSize,omitempty"`
 
-	// Endpoint is the endpoint for the provider
-	Endpoint string `json:"endpoint"`
+	// FlushInterval for Fluentbit
+	// +kubebuilder:default=5
+	// +kubebuilder:validation:Optional
+	FlushInterval int32 `json:"flushInterval,omitempty"`
 
-	// Parameters for the alert
-	Parameters map[string]string `json:"parameters,omitempty"`
-}
-
-// RunbookRef defines a reference to a remediation runbook
-type RunbookRef struct {
-	// Name of the runbook
-	Name string `json:"name"`
-
-	// ConfigMap containing the runbook
-	ConfigMap string `json:"configMap"`
-
-	// Key in the ConfigMap
-	Key string `json:"key,omitempty"`
+	// Custom parser configuration
+	// +kubebuilder:validation:Optional
+	Parser string `json:"parser,omitempty"`
 }
 
 // LogRemediationStatus defines the observed state of LogRemediation
 type LogRemediationStatus struct {
 	// Conditions represent the latest available observations of an object's state
-	Conditions []LogRemediationCondition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// LastRemediationTime is the last time a remediation was performed
-	LastRemediationTime *metav1.Time `json:"lastRemediationTime,omitempty"`
+	// FluentbitPods lists the pods running Fluentbit for this remediation
+	FluentbitPods []string `json:"fluentbitPods,omitempty"`
 
-	// MatchedPatterns represents patterns that have been matched
-	MatchedPatterns []MatchedPattern `json:"matchedPatterns,omitempty"`
-
-	// RemediationHistory contains a history of remediations
-	RemediationHistory []RemediationHistoryEntry `json:"remediationHistory,omitempty"`
+	// LastConfigured is the last time the remediation was configured
+	LastConfigured *metav1.Time `json:"lastConfigured,omitempty"`
 }
 
-// LogRemediationCondition represents the condition of the log remediation
-type LogRemediationCondition struct {
-	// Type of the condition
-	Type string `json:"type"`
+//+kubebuilder:object:root=true
+//+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 
-	// Status of the condition, one of True, False, Unknown
-	Status string `json:"status"`
+// LogRemediation is the Schema for the logremediations API
+type LogRemediation struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// Last time we got an update on this condition
-	LastUpdateTime metav1.Time `json:"lastUpdateTime,omitempty"`
-
-	// Reason for the condition's last transition
-	Reason string `json:"reason,omitempty"`
-
-	// Message about the condition's last transition
-	Message string `json:"message,omitempty"`
+	Spec   LogRemediationSpec   `json:"spec,omitempty"`
+	Status LogRemediationStatus `json:"status,omitempty"`
 }
 
-// MatchedPattern represents a matched log pattern
-type MatchedPattern struct {
-	// Name of the pattern
-	Name string `json:"name"`
-
-	// OccurrenceCount is the number of times this pattern was matched
-	OccurrenceCount int `json:"occurrenceCount"`
-
-	// LastOccurrence is when this pattern was last matched
-	LastOccurrence metav1.Time `json:"lastOccurrence"`
-
-	// Sample is a sample of the matched log
-	Sample string `json:"sample,omitempty"`
-}
-
-// RemediationHistoryEntry represents a single remediation action taken
-type RemediationHistoryEntry struct {
-	// Timestamp when the remediation was performed
-	Timestamp metav1.Time `json:"timestamp"`
-
-	// Action that was taken
-	Action string `json:"action"`
-
-	// Result of the action
-	Result string `json:"result"`
-
-	// PatternName that triggered this remediation
-	PatternName string `json:"patternName"`
-
-	// Message provides additional details
-	Message string `json:"message,omitempty"`
-}
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+//+kubebuilder:object:root=true
 
 // LogRemediationList contains a list of LogRemediation
 type LogRemediationList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []LogRemediation `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&LogRemediation{}, &LogRemediationList{})
 }
