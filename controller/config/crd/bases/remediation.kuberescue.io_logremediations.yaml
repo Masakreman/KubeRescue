@@ -1,0 +1,196 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.0
+  name: logremediations.remediation.kuberescue.io
+spec:
+  group: remediation.kuberescue.io
+  names:
+    kind: LogRemediation
+    listKind: LogRemediationList
+    plural: logremediations
+    singular: logremediation
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Status
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: LogRemediation is the Schema for the logremediations API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: LogRemediationSpec defines the desired state of LogRemediation
+            properties:
+              elasticsearchConfig:
+                description: ElasticsearchConfig defines the Elasticsearch connection
+                  details
+                properties:
+                  host:
+                    description: Host of the Elasticsearch cluster
+                    type: string
+                  index:
+                    description: Index to store logs in
+                    type: string
+                  port:
+                    default: 9200
+                    description: Port of the Elasticsearch cluster
+                    format: int32
+                    type: integer
+                  secretRef:
+                    description: SecretRef for authentication (optional)
+                    type: string
+                required:
+                - host
+                - index
+                type: object
+              fluentbitConfig:
+                description: FluentbitConfig defines the Fluentbit configuration
+                properties:
+                  bufferSize:
+                    default: 5MB
+                    description: BufferSize for Fluentbit
+                    type: string
+                  flushInterval:
+                    default: 5
+                    description: FlushInterval for Fluentbit
+                    format: int32
+                    type: integer
+                  parser:
+                    description: Custom parser configuration
+                    type: string
+                type: object
+              sources:
+                description: Sources defines the sources to collect logs from
+                items:
+                  description: LogSource defines a source to collect logs from
+                  properties:
+                    container:
+                      description: Container to collect logs from (optional, if not
+                        specified collect from all containers)
+                      type: string
+                    path:
+                      description: Path to logfiles if using a custom log path
+                      type: string
+                    selector:
+                      additionalProperties:
+                        type: string
+                      description: Selector to match resources
+                      type: object
+                    type:
+                      description: Type of log source (pod, deployment, namespace)
+                      enum:
+                      - pod
+                      - deployment
+                      - namespace
+                      type: string
+                  required:
+                  - selector
+                  - type
+                  type: object
+                type: array
+            required:
+            - elasticsearchConfig
+            - sources
+            type: object
+          status:
+            description: LogRemediationStatus defines the observed state of LogRemediation
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of an object's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              fluentbitPods:
+                description: FluentbitPods lists the pods running Fluentbit for this
+                  remediation
+                items:
+                  type: string
+                type: array
+              lastConfigured:
+                description: LastConfigured is the last time the remediation was configured
+                format: date-time
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

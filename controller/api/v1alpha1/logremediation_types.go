@@ -78,7 +78,7 @@ type ElasticsearchConfig struct {
 // FluentbitConfig defines optional custom Fluentbit configuration
 type FluentbitConfig struct {
 	// BufferSize for Fluentbit
-	// +kubebuilder:default=5MB
+	// +kubebuilder:default="5MB"
 	// +kubebuilder:validation:Optional
 	BufferSize string `json:"bufferSize,omitempty"`
 
