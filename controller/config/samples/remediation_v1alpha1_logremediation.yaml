@@ -6,4 +6,12 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: logremediation-sample
 spec:
-  # TODO(user): Add fields here
+  sources:
+  - type: namespace
+    selector:
+      name: default
+  elasticsearchConfig:
+    host: elasticsearch-service
+    port: 9200
+    index: kubernetes-logs
+
