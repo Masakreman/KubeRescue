@@ -18,8 +18,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"reflect"
+	"regexp"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -119,6 +124,14 @@ func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Update successful status
 	r.updateLogRemediationStatus(ctx, logRemediation, "Reconciled", "Successfully reconciled LogRemediation", metav1.ConditionTrue)
+
+	// Check for errors and remediate if remediation rules exist
+	if len(logRemediation.Spec.RemediationRules) > 0 {
+		if err := r.checkLogsAndRemediate(ctx, logRemediation); err != nil {
+			logger.Error(err, "Failed to check logs and remediate")
+			// Don't return error here, just log it
+		}
+	}
 
 	return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
 }
@@ -534,4 +547,162 @@ func (r *LogRemediationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.DaemonSet{}).
 		Owns(&corev1.ConfigMap{}).
 		Complete(r)
+}
+
+// Check for errors and Perform remediation if required
+func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
+	logger := log.FromContext(ctx)
+
+	// Skip if no remediation rules defined
+	if len(lr.Spec.RemediationRules) == 0 {
+		return nil
+	}
+
+	// Get Elasticsearch endpoint
+	esEndpoint := fmt.Sprintf("http://%s:%d/%s/_search",
+		lr.Spec.ElasticsearchConfig.Host,
+		lr.Spec.ElasticsearchConfig.Port,
+		lr.Spec.ElasticsearchConfig.Index)
+
+	// Create search query for recent error logs
+	// This is a simplified query - in production it would probably be better to filter by time range or somethiing like that
+	query := `{
+        "query": {
+            "bool": {
+                "must": [
+                    { "match": { "kubernetes.namespace_name": "default" } },
+                    { "match_phrase": { "log": "ERROR" } }
+                ]
+            }
+        },
+        "size": 100,
+        "sort": [{ "@timestamp": { "order": "desc" } }]
+    }`
+
+	// Query Elasticsearch
+	req, err := http.NewRequest("POST", esEndpoint, strings.NewReader(query))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error(err, "Failed to query Elasticsearch")
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// Parse response
+	var esResult map[string]interface{}
+	if err := json.Unmarshal(body, &esResult); err != nil {
+		return err
+	}
+
+	// Extract hits
+	hits, ok := esResult["hits"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("Invalid Elasticsearch response format")
+	}
+
+	hitsList, ok := hits["hits"].([]interface{})
+	if !ok {
+		return fmt.Errorf("Invalid Elasticsearch hits format")
+	}
+
+	// Check each log against remediation rules
+	for _, hit := range hitsList {
+		hitMap, ok := hit.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		source, ok := hitMap["_source"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Get log message
+		logMsg, ok := source["log"].(string)
+		if !ok {
+			continue
+		}
+
+		// Get Kubernetes metadata
+		k8s, ok := source["kubernetes"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		podName, _ := k8s["pod_name"].(string)
+		namespace, _ := k8s["namespace_name"].(string)
+
+		// Check against rules
+		for _, rule := range lr.Spec.RemediationRules {
+			matched, err := regexp.MatchString(rule.ErrorPattern, logMsg)
+			if err != nil {
+				logger.Error(err, "Error matching pattern", "pattern", rule.ErrorPattern)
+				continue
+			}
+
+			if matched {
+				logger.Info("Error pattern matched", "pattern", rule.ErrorPattern, "pod", podName)
+
+				// Perform remediation based on action type
+				switch rule.Action {
+				case "restart":
+					if err := r.restartPod(ctx, namespace, podName); err != nil {
+						logger.Error(err, "Failed to restart pod", "pod", podName)
+						continue
+					}
+					logger.Info("Pod restarted successfully", "pod", podName)
+
+					// Store remediation action in status
+					r.recordRemediationAction(ctx, lr, podName, rule.ErrorPattern, "restart")
+
+					// We've taken an action, so return
+					return nil
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// Function to restart a pod
+func (r *LogRemediationReconciler) restartPod(ctx context.Context, namespace, podName string) error {
+
+	// Get the pod
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod); err != nil {
+		return err
+	}
+
+	// Delete the pod (it will be recreated by the deployment controller)
+	return r.Delete(ctx, pod)
+}
+
+// Record the remediation actions in the CR status
+func (r *LogRemediationReconciler) recordRemediationAction(ctx context.Context, lr *remediationv1alpha1.LogRemediation, podName, pattern, action string) error {
+
+	// Add a new entry to the RemediationHistory in status
+	entry := remediationv1alpha1.RemediationHistoryEntry{
+		Timestamp: metav1.Now(),
+		PodName:   podName,
+		Pattern:   pattern,
+		Action:    action,
+	}
+
+	lr.Status.RemediationHistory = append(lr.Status.RemediationHistory, entry)
+
+	// Update the status
+	return r.Status().Update(ctx, lr)
 }

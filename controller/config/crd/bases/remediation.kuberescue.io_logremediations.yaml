@@ -84,6 +84,33 @@ spec:
                     description: Custom parser configuration
                     type: string
                 type: object
+              remediationRules:
+                description: RemediationRules defines the remediation actions
+                items:
+                  description: RemediationRule defines a rule to remediate issues
+                    based on log patterns
+                  properties:
+                    action:
+                      description: Action to take when pattern is matched (restart,
+                        scale, exec)
+                      enum:
+                      - restart
+                      - scale
+                      - exec
+                      type: string
+                    cooldownPeriod:
+                      default: 60
+                      description: CooldownPeriod in seconds between remediation actions
+                      format: int32
+                      type: integer
+                    errorPattern:
+                      description: ErrorPattern is the regex pattern to match in logs
+                      type: string
+                  required:
+                  - action
+                  - errorPattern
+                  type: object
+                type: array
               sources:
                 description: Sources defines the sources to collect logs from
                 items:

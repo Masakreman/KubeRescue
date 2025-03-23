@@ -33,6 +33,10 @@ type LogRemediationSpec struct {
 	// FluentbitConfig defines the Fluentbit configuration
 	// +kubebuilder:validation:Optional
 	FluentbitConfig *FluentbitConfig `json:"fluentbitConfig,omitempty"`
+
+	// RemediationRules defines the remediation actions
+	// +kubebuilder:validation:Optional
+	RemediationRules []RemediationRule `json:"remediationRules,omitempty"`
 }
 
 // LogSource defines a source to collect logs from
@@ -102,6 +106,9 @@ type LogRemediationStatus struct {
 
 	// LastConfigured is the last time the remediation was configured
 	LastConfigured *metav1.Time `json:"lastConfigured,omitempty"`
+
+	// RemediationHistory records all remediation actions
+	RemediationHistory []RemediationHistoryEntry `json:"remediationHistory,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -129,4 +136,36 @@ type LogRemediationList struct {
 
 func init() {
 	SchemeBuilder.Register(&LogRemediation{}, &LogRemediationList{})
+}
+
+// RemediationRule defines a rule to remediate issues based on log patterns
+type RemediationRule struct {
+	// ErrorPattern is the regex pattern to match in logs
+	// +kubebuilder:validation:Required
+	ErrorPattern string `json:"errorPattern"`
+
+	// Action to take when pattern is matched (restart, scale, exec)
+	// +kubebuilder:validation:Enum=restart;scale;exec
+	// +kubebuilder:validation:Required
+	Action string `json:"action"`
+
+	// CooldownPeriod in seconds between remediation actions
+	// +kubebuilder:default=60
+	// +kubebuilder:validation:Optional
+	CooldownPeriod int32 `json:"cooldownPeriod,omitempty"`
+}
+
+// RemediationHistoryEntry records a remediation action
+type RemediationHistoryEntry struct {
+	// Timestamp of the remediation action
+	Timestamp metav1.Time `json:"timestamp"`
+
+	// PodName that was remediated
+	PodName string `json:"podName"`
+
+	// Pattern that triggered the remediation
+	Pattern string `json:"pattern"`
+
+	// Action that was taken
+	Action string `json:"action"`
 }
