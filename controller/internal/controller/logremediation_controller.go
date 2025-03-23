@@ -155,6 +155,7 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 }
 
 // generateFluentbitConfig creates a Fluentbit configuration based on the LogRemediation spec
+
 func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alpha1.LogRemediation) string {
 	// Create a basic service section
 	config := `[SERVICE]
@@ -180,45 +181,74 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 		}
 	}
 
-	// Add input sections for each source
-	for i, source := range lr.Spec.Sources {
-		inputName := fmt.Sprintf("input_%d", i)
+	// Standard input for container logs
+	config += `[INPUT]
+    Name             tail
+    Tag              kube.*
+    Path             /var/log/containers/*.log
+    Parser           docker
+    DB               /var/log/flb_kube.db
+    Mem_Buf_Limit    5MB
+    Skip_Long_Lines  On
+    Refresh_Interval 10
 
-		config += fmt.Sprintf("[INPUT]\n    Name            tail\n    Tag             %s.logs\n", inputName)
-
-		// Configure path based on source type
-		switch source.Type {
-		case "pod":
-			config += fmt.Sprintf("    Path            /var/log/containers/*%s*.log\n", source.Selector["name"])
-		case "namespace":
-			config += fmt.Sprintf("    Path            /var/log/containers/*_%s_*.log\n", source.Selector["name"])
-		case "deployment":
-			config += fmt.Sprintf("    Path            /var/log/containers/*%s*.log\n", source.Selector["name"])
-		default:
-			config += "    Path            /var/log/containers/*.log\n"
-		}
-
-		config += "    Parser          docker\n    DB              /var/log/flb_kube.db\n\n"
-	}
+`
 
 	// Add Kubernetes filter
 	config += `[FILTER]
     Name                kubernetes
-    Match               *.logs
+    Match               kube.*
     Kube_URL            https://kubernetes.default.svc:443
     Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
     Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+    Kube_Tag_Prefix     kube.var.log.containers.
     Merge_Log           On
     K8S-Logging.Parser  On
     K8S-Logging.Exclude Off
 
 `
 
+	// Apply source filters based on LogRemediation sources
+	for i, source := range lr.Spec.Sources {
+		filterName := fmt.Sprintf("source_filter_%d", i)
+
+		switch source.Type {
+		case "pod":
+			if podName, ok := source.Selector["name"]; ok {
+				config += fmt.Sprintf(`[FILTER]
+    Name                grep
+    Match               kube.*
+	Filter ID: 			%s
+    Regex               kubernetes.pod_name %s
+
+`, filterName, podName)
+			}
+		case "namespace":
+			if namespace, ok := source.Selector["name"]; ok {
+				config += fmt.Sprintf(`[FILTER]
+    Name                grep
+    Match               kube.*
+    Regex               kubernetes.namespace_name %s
+
+`, namespace)
+			}
+		case "deployment":
+			if deployment, ok := source.Selector["name"]; ok {
+				config += fmt.Sprintf(`[FILTER]
+    Name                grep
+    Match               kube.*
+    Regex               kubernetes.labels.app %s
+
+`, deployment)
+			}
+		}
+	}
+
 	// Add Elasticsearch output
 	esConfig := lr.Spec.ElasticsearchConfig
 	config += fmt.Sprintf(`[OUTPUT]
     Name            es
-    Match           *.logs
+    Match           kube.*
     Host            %s
     Port            %d
     Index           %s
@@ -318,7 +348,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "kuberescue-controller-manager", // Using the operator's service account
+					ServiceAccountName: "default", // Using the operator's service account
 					Containers: []corev1.Container{
 						{
 							Name:  "fluentbit",
