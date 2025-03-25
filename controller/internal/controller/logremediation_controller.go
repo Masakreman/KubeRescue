@@ -564,19 +564,10 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		lr.Spec.ElasticsearchConfig.Port,
 		lr.Spec.ElasticsearchConfig.Index)
 
-	// Create search query for recent error logs
-	// This is a simplified query - in production it would probably be better to filter by time range or somethiing like that
+	// Simplify query for testing
 	query := `{
-        "query": {
-            "bool": {
-                "must": [
-                    { "match": { "kubernetes.namespace_name": "default" } },
-                    { "match_phrase": { "log": "ERROR" } }
-                ]
-            }
-        },
-        "size": 100,
-        "sort": [{ "@timestamp": { "order": "desc" } }]
+        "query": { "match_all": {} },
+        "size": 10
     }`
 
 	// Query Elasticsearch
@@ -600,49 +591,116 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return err
 	}
 
+	logger.Info("Elasticsearch response status", "status", resp.Status)
+	logger.Info("Elasticsearch response body", "body", string(body))
+
 	// Parse response
 	var esResult map[string]interface{}
 	if err := json.Unmarshal(body, &esResult); err != nil {
+		logger.Error(err, "Failed to parse Elasticsearch response", "body", string(body))
 		return err
 	}
 
+	// Log all keys in the response
+	logger.Info("Elasticsearch response keys", "keys", fmt.Sprintf("%v", reflect.ValueOf(esResult).MapKeys()))
+
 	// Extract hits
-	hits, ok := esResult["hits"].(map[string]interface{})
+	hits, ok := esResult["hits"]
 	if !ok {
-		return fmt.Errorf("Invalid Elasticsearch response format")
+		logger.Error(nil, "Missing 'hits' field in response", "response", esResult)
+		return fmt.Errorf("missing 'hits' field in Elasticsearch response")
 	}
 
-	hitsList, ok := hits["hits"].([]interface{})
+	// Convert hits to map
+	hitsMap, ok := hits.(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("Invalid Elasticsearch hits format")
+		logger.Error(nil, "Expected 'hits' to be a map", "hits_type", fmt.Sprintf("%T", hits))
+		return fmt.Errorf("invalid 'hits' field type in Elasticsearch response")
 	}
+
+	// Log keys in the hits map
+	logger.Info("Hits map keys", "keys", fmt.Sprintf("%v", reflect.ValueOf(hitsMap).MapKeys()))
+
+	// Extract hits list
+	hitsList, ok := hitsMap["hits"]
+	if !ok {
+		logger.Error(nil, "Missing 'hits.hits' field in response", "hits", hitsMap)
+		return fmt.Errorf("missing 'hits.hits' field in Elasticsearch response")
+	}
+
+	// Convert hits list to array
+	hitsArray, ok := hitsList.([]interface{})
+	if !ok {
+		logger.Error(nil, "Expected 'hits.hits' to be an array", "hits_list_type", fmt.Sprintf("%T", hitsList))
+		return fmt.Errorf("invalid 'hits.hits' field type in Elasticsearch response")
+	}
+
+	// Log the number of hits
+	logger.Info("Found hits", "count", len(hitsArray))
 
 	// Check each log against remediation rules
-	for _, hit := range hitsList {
-		hitMap, ok := hit.(map[string]interface{})
+	for i, hitObj := range hitsArray {
+		logger.Info("Processing hit", "index", i)
+
+		hitMap, ok := hitObj.(map[string]interface{})
 		if !ok {
+			logger.Error(nil, "Hit is not a map", "hit_type", fmt.Sprintf("%T", hitObj))
 			continue
 		}
 
 		source, ok := hitMap["_source"].(map[string]interface{})
 		if !ok {
+			logger.Error(nil, "Hit source is not a map", "source_type", fmt.Sprintf("%T", hitMap["_source"]))
 			continue
 		}
 
-		// Get log message
-		logMsg, ok := source["log"].(string)
+		// Log the source keys
+		logger.Info("Source keys", "keys", fmt.Sprintf("%v", reflect.ValueOf(source).MapKeys()))
+
+		// Get log message safely
+		logMsgRaw, hasLog := source["log"]
+		if !hasLog {
+			logger.Error(nil, "No log field in source", "source", source)
+			continue
+		}
+
+		logMsg, ok := logMsgRaw.(string)
 		if !ok {
+			logger.Error(nil, "Log field is not a string", "log_type", fmt.Sprintf("%T", logMsgRaw))
 			continue
 		}
 
-		// Get Kubernetes metadata
-		k8s, ok := source["kubernetes"].(map[string]interface{})
+		// Check for kubernetes metadata safely
+		k8sRaw, hasK8s := source["kubernetes"]
+		if !hasK8s {
+			logger.Error(nil, "No kubernetes field in source", "source", source)
+			continue
+		}
+
+		k8s, ok := k8sRaw.(map[string]interface{})
 		if !ok {
+			logger.Error(nil, "Kubernetes field is not a map", "k8s_type", fmt.Sprintf("%T", k8sRaw))
 			continue
 		}
 
-		podName, _ := k8s["pod_name"].(string)
-		namespace, _ := k8s["namespace_name"].(string)
+		// Extract pod and namespace
+		podNameRaw, hasPod := k8s["pod_name"]
+		namespaceRaw, hasNamespace := k8s["namespace_name"]
+
+		if !hasPod || !hasNamespace {
+			logger.Error(nil, "Missing pod_name or namespace_name", "k8s", k8s)
+			continue
+		}
+
+		podName, ok1 := podNameRaw.(string)
+		namespace, ok2 := namespaceRaw.(string)
+
+		if !ok1 || !ok2 {
+			logger.Error(nil, "pod_name or namespace_name is not a string",
+				"pod_name_type", fmt.Sprintf("%T", podNameRaw),
+				"namespace_type", fmt.Sprintf("%T", namespaceRaw))
+			continue
+		}
 
 		// Check against rules
 		for _, rule := range lr.Spec.RemediationRules {

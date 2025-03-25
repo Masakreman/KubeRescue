@@ -1,14 +1,14 @@
 apiVersion: remediation.kuberescue.io/v1alpha1
 kind: LogRemediation
 metadata:
-  name: db-error-remediation
+  name: test1-db-error-remediation
 spec:
   sources:
   - type: deployment
     selector:
-      name: test1_db_connection_failed
+      name: test1-db-error-remediation
   elasticsearchConfig:
-    host: elasticsearch-service  
+    host: localhost
     port: 9200
     index: kubernetes-logs
   remediationRules:

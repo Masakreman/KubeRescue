@@ -215,6 +215,31 @@ spec:
                 description: LastConfigured is the last time the remediation was configured
                 format: date-time
                 type: string
+              remediationHistory:
+                description: RemediationHistory records all remediation actions
+                items:
+                  description: RemediationHistoryEntry records a remediation action
+                  properties:
+                    action:
+                      description: Action that was taken
+                      type: string
+                    pattern:
+                      description: Pattern that triggered the remediation
+                      type: string
+                    podName:
+                      description: PodName that was remediated
+                      type: string
+                    timestamp:
+                      description: Timestamp of the remediation action
+                      format: date-time
+                      type: string
+                  required:
+                  - action
+                  - pattern
+                  - podName
+                  - timestamp
+                  type: object
+                type: array
             type: object
         type: object
     served: true
