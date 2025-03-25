@@ -1,16 +1,21 @@
 apiVersion: remediation.kuberescue.io/v1alpha1
 kind: LogRemediation
 metadata:
-  name: test1-db-error-remediation
+  name: db-error-remediation
+  namespace: default
 spec:
   sources:
   - type: deployment
     selector:
-      name: test1-db-error-remediation
+      app: db-error-remediation
   elasticsearchConfig:
-    host: localhost
+    host: elasticsearch
     port: 9200
     index: kubernetes-logs
+  fluentbitConfig:
+    bufferSize: "10MB"
+    flushInterval: 5
+    parser: ""
   remediationRules:
   - errorPattern: "CRITICAL_DB_CONNECTION_FAILED"
     action: restart
