@@ -1,0 +1,23 @@
+apiVersion: remediation.kuberescue.io/v1alpha1
+kind: LogRemediation
+metadata:
+  name: traffic-spike-remediation
+spec:
+  sources:
+  - type: deployment
+    selector:
+      app: test4-traffic-spike-app
+  elasticsearchConfig:
+    host: elasticsearch.default.svc.cluster.local
+    port: 9200
+    index: kubernetes-logs
+  fluentbitConfig:
+    bufferSize: "10MB"
+    flushInterval: 1
+  remediationRules:
+  - errorPattern: "High traffic on .*, service degrading"
+    action: scale
+    cooldownPeriod: 180
+  - errorPattern: "CRITICAL: Service overloaded"
+    action: restart
+    cooldownPeriod: 300

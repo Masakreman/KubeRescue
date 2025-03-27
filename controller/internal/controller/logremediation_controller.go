@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -854,21 +856,23 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 					// Perform remediation based on action type
 					switch rule.Action {
 					case "restart":
-						if err := r.restartPod(ctx, namespace, podName); err != nil {
+						if err := r.performPodRestart(ctx, lr, namespace, podName, rule.ErrorPattern); err != nil {
 							logger.Error(err, "Failed to restart pod", "pod", podName)
 							continue
 						}
-						logger.Info("Pod restarted successfully", "pod", podName)
-
-						// Store remediation action in status
-						r.recordRemediationAction(ctx, lr, podName, rule.ErrorPattern, "restart")
-
 						// We've taken an action, so return
 						return nil
+
 					case "scale":
-						logger.Info("Scale remediation not implemented yet")
-						// TODO: Implement scale remediation
+						if err := r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern); err != nil {
+							logger.Error(err, "Failed to scale resource", "pod", podName)
+							continue
+						}
+						// We've taken an action, so return
+						return nil
+
 					case "exec":
+						// Implement exec action as needed
 						logger.Info("Exec remediation not implemented yet")
 						// TODO: Implement exec remediation
 					}
@@ -880,17 +884,223 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	return nil
 }
 
-// Function to restart a pod
-func (r *LogRemediationReconciler) restartPod(ctx context.Context, namespace, podName string) error {
+// performPodRestart handles restarting a pod with proper owner detection
+func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
+	namespace, podName, errorPattern string) error {
+
+	logger := log.FromContext(ctx)
+	logger.Info("Performing pod restart remediation", "pod", podName, "namespace", namespace)
 
 	// Get the pod
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Pod no longer exists, skipping restart", "pod", podName)
+			return nil
+		}
+		return fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Delete the pod (it will be recreated by the controller)
+	if err := r.Delete(ctx, pod); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Pod was already deleted", "pod", podName)
+			return nil
+		}
+		return fmt.Errorf("failed to delete pod: %w", err)
+	}
+
+	logger.Info("Pod deleted successfully, will be recreated by controller", "pod", podName)
+
+	// Record the remediation action
+	return r.recordRemediationAction(ctx, lr, podName, errorPattern, "restart")
+}
+
+// performResourceScaling handles scaling resources with automatic owner detection
+func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
+	namespace, podName, errorPattern string) error {
+
+	logger := log.FromContext(ctx)
+	logger.Info("Performing scaling remediation", "pod", podName, "namespace", namespace)
+
+	// Get the pod to determine its owner
+	pod := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod); err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Pod no longer exists, skipping scaling", "pod", podName)
+			return nil
+		}
+		return fmt.Errorf("failed to get pod: %w", err)
+	}
+
+	// Find the owner reference that's a scalable resource
+	ownerKind := ""
+	ownerName := ""
+
+	for _, owner := range pod.OwnerReferences {
+		if owner.Controller != nil && *owner.Controller {
+			// Check if it's a kind we can scale
+			switch owner.Kind {
+			case "ReplicaSet":
+				// For ReplicaSets, we need to find the Deployment that owns it
+				rs := &appsv1.ReplicaSet{}
+				if err := r.Get(ctx, types.NamespacedName{Name: owner.Name, Namespace: namespace}, rs); err != nil {
+					logger.Error(err, "Failed to get ReplicaSet", "name", owner.Name)
+					continue
+				}
+
+				// Find the deployment that owns this ReplicaSet
+				for _, rsOwner := range rs.OwnerReferences {
+					if rsOwner.Kind == "Deployment" && rsOwner.Controller != nil && *rsOwner.Controller {
+						ownerKind = "Deployment"
+						ownerName = rsOwner.Name
+						break
+					}
+				}
+			case "StatefulSet", "Deployment":
+				ownerKind = owner.Kind
+				ownerName = owner.Name
+			}
+		}
+
+		if ownerKind != "" {
+			break // Found a scalable owner
+		}
+	}
+
+	if ownerKind == "" || ownerName == "" {
+		return fmt.Errorf("could not find a scalable owner for pod %s", podName)
+	}
+
+	logger.Info("Found scalable owner", "kind", ownerKind, "name", ownerName)
+
+	// Get current replica count based on owner kind
+	var currentReplicas int32
+	var maxReplicas int32 = 10 // Default max replicas, could be configurable via CRD
+
+	switch ownerKind {
+	case "Deployment":
+		deployment := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: ownerName, Namespace: namespace}, deployment); err != nil {
+			return fmt.Errorf("failed to get deployment: %w", err)
+		}
+
+		if deployment.Spec.Replicas != nil {
+			currentReplicas = *deployment.Spec.Replicas
+		} else {
+			currentReplicas = 1 // Default
+		}
+
+		// Check for HPA and respect its maxReplicas if it exists
+		hpaList := &autoscalingv1.HorizontalPodAutoscalerList{}
+		if err := r.List(ctx, hpaList, client.InNamespace(namespace)); err == nil {
+			for _, hpa := range hpaList.Items {
+				if hpa.Spec.ScaleTargetRef.Kind == "Deployment" && hpa.Spec.ScaleTargetRef.Name == ownerName {
+					maxReplicas = hpa.Spec.MaxReplicas
+					logger.Info("Found HPA, using its maxReplicas", "hpa", hpa.Name, "maxReplicas", maxReplicas)
+					break
+				}
+			}
+		}
+
+	case "StatefulSet":
+		statefulSet := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, types.NamespacedName{Name: ownerName, Namespace: namespace}, statefulSet); err != nil {
+			return fmt.Errorf("failed to get statefulset: %w", err)
+		}
+
+		if statefulSet.Spec.Replicas != nil {
+			currentReplicas = *statefulSet.Spec.Replicas
+		} else {
+			currentReplicas = 1 // Default
+		}
+	}
+
+	// Apply scaling logic
+	if currentReplicas >= maxReplicas {
+		logger.Info("Resource is already at max replicas, switching to restart remediation",
+			"kind", ownerKind, "name", ownerName, "currentReplicas", currentReplicas, "maxReplicas", maxReplicas)
+
+		// When scaling is maxed out, fall back to restart
+		return r.performPodRestart(ctx, lr, namespace, podName, errorPattern)
+	}
+
+	// Implement progressive scaling
+	// Scale by 25% rounded up, with minimum of 1, to get to max replicas faster for critical issues
+	scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
+	if scaleIncrement < 1 {
+		scaleIncrement = 1
+	}
+
+	newReplicas := currentReplicas + scaleIncrement
+	if newReplicas > maxReplicas {
+		newReplicas = maxReplicas
+	}
+
+	logger.Info("Scaling resource", "kind", ownerKind, "name", ownerName,
+		"from", currentReplicas, "to", newReplicas)
+
+	// Apply the scaling based on owner kind
+	switch ownerKind {
+	case "Deployment":
+		return r.scaleDeployment(ctx, namespace, ownerName, newReplicas, lr, podName, errorPattern)
+	case "StatefulSet":
+		return r.scaleStatefulSet(ctx, namespace, ownerName, newReplicas, lr, podName, errorPattern)
+	}
+
+	return fmt.Errorf("unsupported owner kind: %s", ownerKind)
+}
+
+// scaleDeployment scales a deployment to the specified number of replicas
+func (r *LogRemediationReconciler) scaleDeployment(ctx context.Context, namespace, name string,
+	replicas int32, lr *remediationv1alpha1.LogRemediation, podName, errorPattern string) error {
+
+	logger := log.FromContext(ctx)
+
+	// Get the deployment
+	deployment := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deployment); err != nil {
 		return err
 	}
 
-	// Delete the pod (it will be recreated by the deployment controller)
-	return r.Delete(ctx, pod)
+	// Update replicas
+	deployment.Spec.Replicas = &replicas
+
+	// Apply the update
+	if err := r.Update(ctx, deployment); err != nil {
+		return err
+	}
+
+	logger.Info("Deployment scaled successfully", "name", name, "replicas", replicas)
+
+	// Record the action
+	return r.recordRemediationAction(ctx, lr, podName, errorPattern, fmt.Sprintf("scale:%d", replicas))
+}
+
+// scaleStatefulSet scales a statefulset to the specified number of replicas
+func (r *LogRemediationReconciler) scaleStatefulSet(ctx context.Context, namespace, name string,
+	replicas int32, lr *remediationv1alpha1.LogRemediation, podName, errorPattern string) error {
+
+	logger := log.FromContext(ctx)
+
+	// Get the statefulset
+	statefulSet := &appsv1.StatefulSet{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, statefulSet); err != nil {
+		return err
+	}
+
+	// Update replicas
+	statefulSet.Spec.Replicas = &replicas
+
+	// Apply the update
+	if err := r.Update(ctx, statefulSet); err != nil {
+		return err
+	}
+
+	logger.Info("StatefulSet scaled successfully", "name", name, "replicas", replicas)
+
+	// Record the action
+	return r.recordRemediationAction(ctx, lr, podName, errorPattern, fmt.Sprintf("scale:%d", replicas))
 }
 
 // Record the remediation actions in the CR status
