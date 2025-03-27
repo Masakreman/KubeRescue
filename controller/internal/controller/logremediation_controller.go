@@ -197,7 +197,7 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 	// Input configuration with specific paths
 	config += `[INPUT]
     Name            tail
-    Path            /var/log/containers/db-error-app*.log
+    Path            /var/log/containers/test1-db-error-app*.log
     Parser          docker
     Tag             kube.*
     Refresh_Interval 1
