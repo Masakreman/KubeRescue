@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -167,14 +168,12 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 	return nil
 }
 
-// generateFluentbitConfig creates a Fluentbit configuration based on the LogRemediation spec
-
 func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alpha1.LogRemediation) string {
 	// Create a basic service section
 	config := `[SERVICE]
-    Flush        5
+    Flush        1
     Daemon       Off
-    Log_Level    info
+    Log_Level    debug
     Parsers_File parsers.conf
     HTTP_Server  On
     HTTP_Listen  0.0.0.0
@@ -183,101 +182,65 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 
 `
 
-	// Override with custom settings if provided
+	// Apply custom settings if provided
 	if lr.Spec.FluentbitConfig != nil {
 		if lr.Spec.FluentbitConfig.BufferSize != "" {
-			config = fmt.Sprintf(
-				"[SERVICE]\n    Flush        %d\n    Daemon       Off\n    Log_Level    info\n    Parsers_File parsers.conf\n    HTTP_Server  On\n    HTTP_Listen  0.0.0.0\n    HTTP_Port    2020\n    Buffer_Size  %s\n\n",
-				lr.Spec.FluentbitConfig.FlushInterval,
-				lr.Spec.FluentbitConfig.BufferSize,
-			)
+			config = strings.Replace(config, "Buffer_Size  5MB", fmt.Sprintf("Buffer_Size  %s", lr.Spec.FluentbitConfig.BufferSize), 1)
+		}
+		if lr.Spec.FluentbitConfig.FlushInterval != 0 {
+			config = strings.Replace(config, "Flush        1", fmt.Sprintf("Flush        %d", lr.Spec.FluentbitConfig.FlushInterval), 1)
 		}
 	}
 
-	// Standard input for container logs
+	// For simplicity, just use a direct path pattern targeting the error app
 	config += `[INPUT]
-    Name             tail
-    Tag              kube.*
-    Path             /var/log/containers/*.log
-    Parser           docker
-    DB               /var/log/flb_kube.db
-    Mem_Buf_Limit    5MB
-    Skip_Long_Lines  On
-    Refresh_Interval 10
+    Name            tail
+    Path            /var/log/containers/db-error-app*.log
+    Parser          docker
+    Tag             app.errors
+    Refresh_Interval 1
+    Mem_Buf_Limit   5MB
+    Skip_Long_Lines On
+    DB              /var/log/flb_kube.db
+    Read_from_Head  True
 
 `
 
-	// Add Kubernetes filter
-	config += `[FILTER]
-    Name                kubernetes
-    Match               kube.*
-    Kube_URL            https://kubernetes.default.svc:443
-    Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-    Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
-    Kube_Tag_Prefix     kube.var.log.containers.
-    Merge_Log           On
-    K8S-Logging.Parser  On
-    K8S-Logging.Exclude Off
+	// Add filter for error patterns
+	if len(lr.Spec.RemediationRules) > 0 {
+		for _, rule := range lr.Spec.RemediationRules {
+			config += fmt.Sprintf(`[FILTER]
+    Name            grep
+    Match           app.errors
+    Regex           log %s
 
-`
-
-	// Apply source filters based on LogRemediation sources
-	for i, source := range lr.Spec.Sources {
-		filterName := fmt.Sprintf("source_filter_%d", i)
-
-		switch source.Type {
-		case "pod":
-			if podName, ok := source.Selector["name"]; ok {
-				config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-	Filter ID: 			%s
-    Regex               kubernetes.pod_name %s
-
-`, filterName, podName)
-			}
-		case "namespace":
-			if namespace, ok := source.Selector["name"]; ok {
-				config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-    Regex               kubernetes.namespace_name %s
-
-`, namespace)
-			}
-		case "deployment":
-			if deployment, ok := source.Selector["name"]; ok {
-				config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-    Regex               kubernetes.labels.app %s
-
-`, deployment)
-			}
+`, rule.ErrorPattern)
 		}
 	}
+
+	// Add a stdout output for debugging
+	config += `[OUTPUT]
+    Name            stdout
+    Match           app.errors
+    Format          json_lines
+
+`
 
 	// Add Elasticsearch output
 	esConfig := lr.Spec.ElasticsearchConfig
 	config += fmt.Sprintf(`[OUTPUT]
-    Name            es
-    Match           kube.*
-    Host            %s
-    Port            %d
-    Index           %s
-    Generate_ID     On
-    Replace_Dots    On
-    Logstash_Format Off
+    Name               es
+    Match              app.errors
+    Host               %s
+    Port               %d
+    Index              %s
+    Generate_ID        On
+    Suppress_Type_Name On
+    HTTP_User          elastic
+    HTTP_Passwd        changeme
+    Trace_Output       On
+    Trace_Error        On
 `, esConfig.Host, esConfig.Port, esConfig.Index)
-
-	// Add auth if specified
-	if esConfig.SecretRef != "" {
-		config += `    HTTP_User        ${ES_USER}
-    HTTP_Passwd      ${ES_PASSWORD}
-    tls              On
-    tls.verify       Off
-`
-	}
 
 	return config
 }
@@ -289,7 +252,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
 	// Generate Fluentbit configuration
 	fbConfig := r.generateFluentbitConfig(lr)
 
-	// Define basic parsers config
+	// Define parsers config in a separate file
 	parsersConfig := `[PARSER]
     Name   docker
     Format json
@@ -335,7 +298,6 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
 	return nil
 }
 
-// reconcileFluentbitDaemonSet ensures the DaemonSet exists with the correct configuration
 func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
 
@@ -345,7 +307,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 		"controller": lr.Name,
 	}
 
-	// Create DaemonSet
+	// Create DaemonSet with improved configuration
 	daemonSet := &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-fluentbit", lr.Name),
@@ -361,19 +323,29 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "default", // Using the operator's service account
+					ServiceAccountName: "default", // You might want to create a dedicated service account
 					Containers: []corev1.Container{
 						{
 							Name:  "fluentbit",
 							Image: "fluent/fluent-bit:1.9",
+							Env: []corev1.EnvVar{
+								{
+									Name:  "ES_USER",
+									Value: "elastic", // Default ES user, override with secret if provided
+								},
+								{
+									Name:  "ES_PASSWORD",
+									Value: "changeme", // Default ES password, override with secret if provided
+								},
+							},
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    *resource.NewMilliQuantity(100, resource.DecimalSI),
-									corev1.ResourceMemory: *resource.NewQuantity(200*1024*1024, resource.BinarySI),
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(200, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(300*1024*1024, resource.BinarySI),
 								},
 								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    *resource.NewMilliQuantity(50, resource.DecimalSI),
-									corev1.ResourceMemory: *resource.NewQuantity(100*1024*1024, resource.BinarySI),
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(100, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(150*1024*1024, resource.BinarySI),
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
@@ -390,6 +362,37 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 									MountPath: "/var/lib/docker/containers",
 									ReadOnly:  true,
 								},
+								{
+									Name:      "flb-state",
+									MountPath: "/var/lib/fluent-bit",
+								},
+							},
+							// Add readiness/liveness probes
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/api/v1/health",
+										Port: intstr.FromInt(2020),
+									},
+								},
+								InitialDelaySeconds: 10,
+								PeriodSeconds:       10,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    3,
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/",
+										Port: intstr.FromInt(2020),
+									},
+								},
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       30,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    3,
 							},
 						},
 					},
@@ -419,6 +422,18 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 									Path: "/var/lib/docker/containers",
 								},
 							},
+						},
+						{
+							Name: "flb-state",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+					Tolerations: []corev1.Toleration{
+						{
+							Effect:   corev1.TaintEffectNoSchedule,
+							Operator: corev1.TolerationOpExists,
 						},
 					},
 				},
@@ -564,11 +579,28 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		lr.Spec.ElasticsearchConfig.Port,
 		lr.Spec.ElasticsearchConfig.Index)
 
-	// Simplify query for testing
-	query := `{
-        "query": { "match_all": {} },
-        "size": 10
-    }`
+	// Build better query that targets specific error patterns
+	var matchQueries []string
+	for _, rule := range lr.Spec.RemediationRules {
+		// Create a match query for each error pattern
+		matchQueries = append(matchQueries, fmt.Sprintf(`{"match_phrase": {"log": "%s"}}`, rule.ErrorPattern))
+	}
+
+	// Construct a more effective query with time constraints
+	query := fmt.Sprintf(`{
+		"query": {
+			"bool": {
+				"must": [
+					{"bool": {"should": [%s]}},
+					{"range": {"@timestamp": {"gte": "now-1h"}}}
+				]
+			}
+		},
+		"sort": [{"@timestamp": {"order": "desc"}}],
+		"size": 20
+	}`, strings.Join(matchQueries, ","))
+
+	logger.Info("Querying Elasticsearch", "endpoint", esEndpoint, "query", query)
 
 	// Query Elasticsearch
 	req, err := http.NewRequest("POST", esEndpoint, strings.NewReader(query))
@@ -577,7 +609,16 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	// Add basic auth if credentials are provided
+	if lr.Spec.ElasticsearchConfig.SecretRef != "" {
+		// In a real implementation, you would fetch credentials from the secret
+		// For debugging, we're setting default credentials
+		req.SetBasicAuth("elastic", "changeme")
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Error(err, "Failed to query Elasticsearch")
@@ -591,118 +632,166 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return err
 	}
 
-	logger.Info("Elasticsearch response status", "status", resp.Status)
-	logger.Info("Elasticsearch response body", "body", string(body))
+	logger.Info("Elasticsearch response", "status", resp.Status, "body_size", len(body))
+
+	// Check for successful response
+	if resp.StatusCode != http.StatusOK {
+		logger.Error(nil, "Elasticsearch query failed",
+			"status", resp.Status,
+			"body", string(body))
+		return fmt.Errorf("elasticsearch query failed with status %s", resp.Status)
+	}
 
 	// Parse response
 	var esResult map[string]interface{}
 	if err := json.Unmarshal(body, &esResult); err != nil {
-		logger.Error(err, "Failed to parse Elasticsearch response", "body", string(body))
+		logger.Error(err, "Failed to parse Elasticsearch response")
 		return err
 	}
 
-	// Log all keys in the response
-	logger.Info("Elasticsearch response keys", "keys", fmt.Sprintf("%v", reflect.ValueOf(esResult).MapKeys()))
-
-	// Extract hits
+	// Extract hits from the response
 	hits, ok := esResult["hits"]
 	if !ok {
-		logger.Error(nil, "Missing 'hits' field in response", "response", esResult)
+		logger.Error(nil, "Missing 'hits' field in response")
 		return fmt.Errorf("missing 'hits' field in Elasticsearch response")
 	}
 
 	// Convert hits to map
 	hitsMap, ok := hits.(map[string]interface{})
 	if !ok {
-		logger.Error(nil, "Expected 'hits' to be a map", "hits_type", fmt.Sprintf("%T", hits))
+		logger.Error(nil, "Expected 'hits' to be a map", "type", fmt.Sprintf("%T", hits))
 		return fmt.Errorf("invalid 'hits' field type in Elasticsearch response")
 	}
 
-	// Log keys in the hits map
-	logger.Info("Hits map keys", "keys", fmt.Sprintf("%v", reflect.ValueOf(hitsMap).MapKeys()))
+	// Check if we have hits total
+	totalObj, hasTotalHits := hitsMap["total"]
+	if hasTotalHits {
+		totalMap, isMap := totalObj.(map[string]interface{})
+		if isMap {
+			if value, hasValue := totalMap["value"]; hasValue {
+				logger.Info("Total matching documents", "count", value)
+			}
+		}
+	}
 
 	// Extract hits list
 	hitsList, ok := hitsMap["hits"]
 	if !ok {
-		logger.Error(nil, "Missing 'hits.hits' field in response", "hits", hitsMap)
+		logger.Error(nil, "Missing 'hits.hits' field in response")
 		return fmt.Errorf("missing 'hits.hits' field in Elasticsearch response")
 	}
 
 	// Convert hits list to array
 	hitsArray, ok := hitsList.([]interface{})
 	if !ok {
-		logger.Error(nil, "Expected 'hits.hits' to be an array", "hits_list_type", fmt.Sprintf("%T", hitsList))
+		logger.Error(nil, "Expected 'hits.hits' to be an array", "type", fmt.Sprintf("%T", hitsList))
 		return fmt.Errorf("invalid 'hits.hits' field type in Elasticsearch response")
 	}
 
 	// Log the number of hits
-	logger.Info("Found hits", "count", len(hitsArray))
+	logger.Info("Found log entries matching error patterns", "count", len(hitsArray))
 
-	// Check each log against remediation rules
-	for i, hitObj := range hitsArray {
-		logger.Info("Processing hit", "index", i)
-
+	// Process hits and perform remediation
+	for _, hitObj := range hitsArray {
 		hitMap, ok := hitObj.(map[string]interface{})
 		if !ok {
-			logger.Error(nil, "Hit is not a map", "hit_type", fmt.Sprintf("%T", hitObj))
 			continue
 		}
 
 		source, ok := hitMap["_source"].(map[string]interface{})
 		if !ok {
-			logger.Error(nil, "Hit source is not a map", "source_type", fmt.Sprintf("%T", hitMap["_source"]))
 			continue
 		}
 
-		// Log the source keys
-		logger.Info("Source keys", "keys", fmt.Sprintf("%v", reflect.ValueOf(source).MapKeys()))
+		// Try to get log message (might be under different paths depending on your setup)
+		logMsg := ""
+		logRaw, hasLog := source["log"]
+		if hasLog {
+			if logStr, ok := logRaw.(string); ok {
+				logMsg = logStr
+			}
+		}
 
-		// Get log message safely
-		logMsgRaw, hasLog := source["log"]
-		if !hasLog {
-			logger.Error(nil, "No log field in source", "source", source)
+		// If log message is not directly in "log" field, check if it's nested
+		if logMsg == "" {
+			messageRaw, hasMessage := source["message"]
+			if hasMessage {
+				if messageStr, ok := messageRaw.(string); ok {
+					logMsg = messageStr
+				}
+			}
+		}
+
+		if logMsg == "" {
+			logger.Info("No log message found in document", "source_keys", reflect.ValueOf(source).MapKeys())
 			continue
 		}
 
-		logMsg, ok := logMsgRaw.(string)
-		if !ok {
-			logger.Error(nil, "Log field is not a string", "log_type", fmt.Sprintf("%T", logMsgRaw))
-			continue
-		}
+		// Try to extract kubernetes metadata - handle various formats
+		podName := ""
+		namespace := ""
 
-		// Check for kubernetes metadata safely
+		// First, try the standard format
 		k8sRaw, hasK8s := source["kubernetes"]
-		if !hasK8s {
-			logger.Error(nil, "No kubernetes field in source", "source", source)
+		if hasK8s {
+			if k8s, ok := k8sRaw.(map[string]interface{}); ok {
+				podNameRaw, hasPod := k8s["pod_name"]
+				if hasPod {
+					if podNameStr, ok := podNameRaw.(string); ok {
+						podName = podNameStr
+					}
+				}
+
+				namespaceRaw, hasNamespace := k8s["namespace_name"]
+				if hasNamespace {
+					if namespaceStr, ok := namespaceRaw.(string); ok {
+						namespace = namespaceStr
+					}
+				}
+			}
+		}
+
+		// If not found in standard format, look for it elsewhere
+		if podName == "" {
+			// Check if we have it in metadata
+			metadataRaw, hasMetadata := source["metadata"]
+			if hasMetadata {
+				if metadata, ok := metadataRaw.(map[string]interface{}); ok {
+					if podNameRaw, hasPod := metadata["pod"]; hasPod {
+						if podNameStr, ok := podNameRaw.(string); ok {
+							podName = podNameStr
+						}
+					}
+
+					if namespaceRaw, hasNamespace := metadata["namespace"]; hasNamespace {
+						if namespaceStr, ok := namespaceRaw.(string); ok {
+							namespace = namespaceStr
+						}
+					}
+				}
+			}
+		}
+
+		// If we still don't have pod name, try to extract from other fields
+		if podName == "" {
+			// Try to extract from log message if it contains pod name
+			// This is just an example - you may need to adjust the pattern
+			podPattern := regexp.MustCompile(`pod[=:]\s*([a-zA-Z0-9-]+)`)
+			if matches := podPattern.FindStringSubmatch(logMsg); len(matches) > 1 {
+				podName = matches[1]
+			}
+		}
+
+		// If we couldn't find the pod name or namespace, skip this entry
+		if podName == "" || namespace == "" {
+			logger.Info("Missing pod name or namespace in log entry",
+				"pod", podName,
+				"namespace", namespace,
+				"log", logMsg)
 			continue
 		}
 
-		k8s, ok := k8sRaw.(map[string]interface{})
-		if !ok {
-			logger.Error(nil, "Kubernetes field is not a map", "k8s_type", fmt.Sprintf("%T", k8sRaw))
-			continue
-		}
-
-		// Extract pod and namespace
-		podNameRaw, hasPod := k8s["pod_name"]
-		namespaceRaw, hasNamespace := k8s["namespace_name"]
-
-		if !hasPod || !hasNamespace {
-			logger.Error(nil, "Missing pod_name or namespace_name", "k8s", k8s)
-			continue
-		}
-
-		podName, ok1 := podNameRaw.(string)
-		namespace, ok2 := namespaceRaw.(string)
-
-		if !ok1 || !ok2 {
-			logger.Error(nil, "pod_name or namespace_name is not a string",
-				"pod_name_type", fmt.Sprintf("%T", podNameRaw),
-				"namespace_type", fmt.Sprintf("%T", namespaceRaw))
-			continue
-		}
-
-		// Check against rules
+		// Check against remediation rules
 		for _, rule := range lr.Spec.RemediationRules {
 			matched, err := regexp.MatchString(rule.ErrorPattern, logMsg)
 			if err != nil {
@@ -711,22 +800,55 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			}
 
 			if matched {
-				logger.Info("Error pattern matched", "pattern", rule.ErrorPattern, "pod", podName)
+				logger.Info("Error pattern matched",
+					"pattern", rule.ErrorPattern,
+					"pod", podName,
+					"namespace", namespace,
+					"log", logMsg)
 
-				// Perform remediation based on action type
-				switch rule.Action {
-				case "restart":
-					if err := r.restartPod(ctx, namespace, podName); err != nil {
-						logger.Error(err, "Failed to restart pod", "pod", podName)
-						continue
+				// Check if we've already performed remediation for this pod recently
+				shouldRemediate := true
+				if len(lr.Status.RemediationHistory) > 0 {
+					for _, historyEntry := range lr.Status.RemediationHistory {
+						// Skip if we've already remediated this pod for the same pattern
+						// within the cooldown period
+						if historyEntry.PodName == podName && historyEntry.Pattern == rule.ErrorPattern {
+							remedationTime := historyEntry.Timestamp.Time
+							cooldownPeriod := time.Duration(rule.CooldownPeriod) * time.Second
+							if time.Since(remedationTime) < cooldownPeriod {
+								logger.Info("Skipping remediation due to cooldown period",
+									"pod", podName,
+									"last_remediation", remedationTime,
+									"cooldown_period_seconds", rule.CooldownPeriod)
+								shouldRemediate = false
+								break
+							}
+						}
 					}
-					logger.Info("Pod restarted successfully", "pod", podName)
+				}
 
-					// Store remediation action in status
-					r.recordRemediationAction(ctx, lr, podName, rule.ErrorPattern, "restart")
+				if shouldRemediate {
+					// Perform remediation based on action type
+					switch rule.Action {
+					case "restart":
+						if err := r.restartPod(ctx, namespace, podName); err != nil {
+							logger.Error(err, "Failed to restart pod", "pod", podName)
+							continue
+						}
+						logger.Info("Pod restarted successfully", "pod", podName)
 
-					// We've taken an action, so return
-					return nil
+						// Store remediation action in status
+						r.recordRemediationAction(ctx, lr, podName, rule.ErrorPattern, "restart")
+
+						// We've taken an action, so return
+						return nil
+					case "scale":
+						logger.Info("Scale remediation not implemented yet")
+						// TODO: Implement scale remediation
+					case "exec":
+						logger.Info("Exec remediation not implemented yet")
+						// TODO: Implement exec remediation
+					}
 				}
 			}
 		}

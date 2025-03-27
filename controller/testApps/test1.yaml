@@ -1,23 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: test1-error-app
+  name: db-error-app
+  namespace: default
   labels:
-    app: test1-db-error-remediation
+    app: db-error-remediation
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: test1-db-error-remediation
+      app: db-error-remediation
   template:
     metadata:
       labels:
-        app: test1-db-error-remediation
+        app: db-error-remediation
     spec:
       containers:
-      - name: busybox
+      - name: error-generator
         image: busybox
         command:
         - /bin/sh
         - -c
-        - "while true; do echo '[INFO] Normal operation'; sleep 3; echo '[ERROR] CRITICAL_DB_CONNECTION_FAILED: Cannot connect to database'; sleep 7; done"
+        - "while true; do echo '[INFO] Normal operation'; sleep 5; echo '[ERROR] CRITICAL_DB_CONNECTION_FAILED: Cannot connect to database'; sleep 10; done"
