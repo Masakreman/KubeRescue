@@ -55,7 +55,7 @@ type LogRemediationReconciler struct {
 //+kubebuilder:rbac:groups=remediation.kuberescue.io,resources=logremediations/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 
 // Reconcile handles the main reconciliation loop for LogRemediation
 func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -168,7 +168,9 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 	return nil
 }
 
+// generate configuration for Fluentibit
 func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alpha1.LogRemediation) string {
+
 	// Create a basic service section
 	config := `[SERVICE]
     Flush        1
@@ -192,12 +194,12 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 		}
 	}
 
-	// For simplicity, just use a direct path pattern targeting the error app
+	// Input configuration with specific paths
 	config += `[INPUT]
     Name            tail
     Path            /var/log/containers/db-error-app*.log
     Parser          docker
-    Tag             app.errors
+    Tag             kube.*
     Refresh_Interval 1
     Mem_Buf_Limit   5MB
     Skip_Long_Lines On
@@ -206,12 +208,27 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 
 `
 
+	// Add Kubernetes metadata filter - THIS IS CRUCIAL for pod name and namespace
+	config += `[FILTER]
+    Name                kubernetes
+    Match               kube.*
+    Kube_URL            https://kubernetes.default.svc:443
+    Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+    Kube_Tag_Prefix     kube.var.log.containers.
+    Merge_Log           On
+    Merge_Log_Key       log_processed
+    K8S-Logging.Parser  On
+    K8S-Logging.Exclude Off
+
+`
+
 	// Add filter for error patterns
 	if len(lr.Spec.RemediationRules) > 0 {
 		for _, rule := range lr.Spec.RemediationRules {
 			config += fmt.Sprintf(`[FILTER]
     Name            grep
-    Match           app.errors
+    Match           kube.*
     Regex           log %s
 
 `, rule.ErrorPattern)
@@ -221,16 +238,22 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 	// Add a stdout output for debugging
 	config += `[OUTPUT]
     Name            stdout
-    Match           app.errors
+    Match           kube.*
     Format          json_lines
 
 `
 
 	// Add Elasticsearch output
 	esConfig := lr.Spec.ElasticsearchConfig
+	hostName := esConfig.Host
+	// Ensure we use the FQDN if a short name is provided
+	if !strings.Contains(hostName, ".") {
+		hostName = fmt.Sprintf("%s.%s.svc.cluster.local", hostName, lr.Namespace)
+	}
+
 	config += fmt.Sprintf(`[OUTPUT]
     Name               es
-    Match              app.errors
+    Match              kube.*
     Host               %s
     Port               %d
     Index              %s
@@ -240,7 +263,7 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
     HTTP_Passwd        changeme
     Trace_Output       On
     Trace_Error        On
-`, esConfig.Host, esConfig.Port, esConfig.Index)
+`, hostName, esConfig.Port, esConfig.Index)
 
 	return config
 }
