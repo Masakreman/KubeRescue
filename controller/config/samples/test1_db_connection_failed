@@ -9,12 +9,12 @@ spec:
     selector:
       app: db-error-remediation
   elasticsearchConfig:
-    host: elasticsearch
+    host: elasticsearch.default.svc.cluster.local
     port: 9200
     index: kubernetes-logs
   fluentbitConfig:
     bufferSize: "10MB"
-    flushInterval: 5
+    flushInterval: 1
     parser: ""
   remediationRules:
   - errorPattern: "CRITICAL_DB_CONNECTION_FAILED"

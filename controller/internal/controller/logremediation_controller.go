@@ -169,11 +169,11 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 }
 
 func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alpha1.LogRemediation) string {
-	// Create a basic service section with more robust defaults
+	// Create a basic service section
 	config := `[SERVICE]
-    Flush        5
+    Flush        1
     Daemon       Off
-    Log_Level    info
+    Log_Level    debug
     Parsers_File parsers.conf
     HTTP_Server  On
     HTTP_Listen  0.0.0.0
@@ -182,136 +182,65 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 
 `
 
-	// Override with custom settings if provided
+	// Apply custom settings if provided
 	if lr.Spec.FluentbitConfig != nil {
-		if lr.Spec.FluentbitConfig.BufferSize != "" || lr.Spec.FluentbitConfig.FlushInterval != 0 {
-			config = fmt.Sprintf(
-				"[SERVICE]\n    Flush        %d\n    Daemon       Off\n    Log_Level    info\n    Parsers_File parsers.conf\n    HTTP_Server  On\n    HTTP_Listen  0.0.0.0\n    HTTP_Port    2020\n    Buffer_Size  %s\n\n",
-				lr.Spec.FluentbitConfig.FlushInterval,
-				lr.Spec.FluentbitConfig.BufferSize,
-			)
+		if lr.Spec.FluentbitConfig.BufferSize != "" {
+			config = strings.Replace(config, "Buffer_Size  5MB", fmt.Sprintf("Buffer_Size  %s", lr.Spec.FluentbitConfig.BufferSize), 1)
+		}
+		if lr.Spec.FluentbitConfig.FlushInterval != 0 {
+			config = strings.Replace(config, "Flush        1", fmt.Sprintf("Flush        %d", lr.Spec.FluentbitConfig.FlushInterval), 1)
 		}
 	}
 
-	// Standard input for container logs - improve the path pattern
+	// For simplicity, just use a direct path pattern targeting the error app
 	config += `[INPUT]
-    Name             tail
-    Tag              kube.*
-    Path             /var/log/containers/*.log
-    Parser           docker
-    DB               /var/log/flb_kube.db
-    Mem_Buf_Limit    5MB
-    Skip_Long_Lines  On
-    Refresh_Interval 10
-    Read_from_Head   True
+    Name            tail
+    Path            /var/log/containers/db-error-app*.log
+    Parser          docker
+    Tag             app.errors
+    Refresh_Interval 1
+    Mem_Buf_Limit   5MB
+    Skip_Long_Lines On
+    DB              /var/log/flb_kube.db
+    Read_from_Head  True
 
 `
 
-	// Add Kubernetes filter with improved settings
-	config += `[FILTER]
-    Name                kubernetes
-    Match               kube.*
-    Kube_URL            https://kubernetes.default.svc:443
-    Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-    Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
-    Kube_Tag_Prefix     kube.var.log.containers.
-    Merge_Log           On
-    K8S-Logging.Parser  On
-    K8S-Logging.Exclude Off
-    Annotations         Off
-
-`
-
-	// Apply source filters based on LogRemediation sources
-	for i, source := range lr.Spec.Sources {
-		filterName := fmt.Sprintf("source_filter_%d", i)
-
-		switch source.Type {
-		case "pod":
-			if podName, ok := source.Selector["name"]; ok {
-				config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-    Alias               %s
-    Regex               kubernetes.pod_name %s
-
-`, filterName, podName)
-			}
-		case "namespace":
-			if namespace, ok := source.Selector["name"]; ok {
-				config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-    Alias               %s
-    Regex               kubernetes.namespace_name %s
-
-`, filterName, namespace)
-			}
-		case "deployment":
-			if deployment, ok := source.Selector["name"]; ok {
-				config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-    Alias               %s
-    Regex               kubernetes.labels.app %s
-
-`, filterName, deployment)
-			}
-		}
-	}
-
-	// Add an additional filter to capture specific error patterns
+	// Add filter for error patterns
 	if len(lr.Spec.RemediationRules) > 0 {
-		for i, rule := range lr.Spec.RemediationRules {
+		for _, rule := range lr.Spec.RemediationRules {
 			config += fmt.Sprintf(`[FILTER]
-    Name                grep
-    Match               kube.*
-    Alias               error_pattern_%d
-    Regex               log %s
+    Name            grep
+    Match           app.errors
+    Regex           log %s
 
-`, i, rule.ErrorPattern)
+`, rule.ErrorPattern)
 		}
 	}
 
-	// Add a record modifier to add a timestamp field
-	config += `[FILTER]
-    Name                record_modifier
-    Match               kube.*
-    Record              timestamp ${TIMESTAMP}
+	// Add a stdout output for debugging
+	config += `[OUTPUT]
+    Name            stdout
+    Match           app.errors
+    Format          json_lines
 
 `
 
-	// Add Elasticsearch output with improved settings
+	// Add Elasticsearch output
 	esConfig := lr.Spec.ElasticsearchConfig
 	config += fmt.Sprintf(`[OUTPUT]
     Name               es
-    Match              kube.*
+    Match              app.errors
     Host               %s
     Port               %d
     Index              %s
-    Type               _doc
     Generate_ID        On
-    Replace_Dots       On
-    Logstash_Format    Off
-    Retry_Limit        False
-    HTTP_User          ${ES_USER}
-    HTTP_Passwd        ${ES_PASSWORD}
-    tls                Off
-    tls.verify         Off
+    Suppress_Type_Name On
+    HTTP_User          elastic
+    HTTP_Passwd        changeme
     Trace_Output       On
     Trace_Error        On
 `, esConfig.Host, esConfig.Port, esConfig.Index)
-
-	// Add parser configuration for enhanced log parsing
-	config += `
-
-[PARSER]
-    Name   docker
-    Format json
-    Time_Key time
-    Time_Format %Y-%m-%dT%H:%M:%S.%L
-    Time_Keep On
-`
 
 	return config
 }
@@ -323,7 +252,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
 	// Generate Fluentbit configuration
 	fbConfig := r.generateFluentbitConfig(lr)
 
-	// Define basic parsers config
+	// Define parsers config in a separate file
 	parsersConfig := `[PARSER]
     Name   docker
     Format json

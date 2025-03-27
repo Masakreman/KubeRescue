@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-fluentbit-config
+  namespace: default
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush           1
+        Log_Level       info
+        Daemon          off
+        Parsers_File    parsers.conf
+        HTTP_Server     On
+        HTTP_Listen     0.0.0.0
+        HTTP_Port       2020
+
+    [INPUT]
+        Name            tail
+        Path            /var/log/containers/db-error-app*.log
+        Parser          docker
+        Tag             app.errors
+        Refresh_Interval 1
+        Mem_Buf_Limit   5MB
+        Skip_Long_Lines On
+        DB              /var/log/flb_kube.db
+        Read_from_Head  True
+
+    [FILTER]
+        Name            grep
+        Match           app.errors
+        Regex           log CRITICAL_DB_CONNECTION_FAILED
+
+    [OUTPUT]
+        Name            stdout
+        Match           app.errors
+        Format          json_lines
+
+    [OUTPUT]
+        Name            es
+        Match           app.errors
+        Host            elasticsearch
+        Port            9200
+        Index           kubernetes-logs
+        Generate_ID     On
+        Suppress_Type_Name On
+        HTTP_User       elastic
+        HTTP_Passwd     changeme
+        Trace_Output    On
+        Trace_Error     On
+
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
