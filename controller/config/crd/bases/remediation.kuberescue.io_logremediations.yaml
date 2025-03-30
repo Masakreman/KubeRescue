@@ -215,6 +215,11 @@ spec:
                 description: LastConfigured is the last time the remediation was configured
                 format: date-time
                 type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  for this LogRemediation
+                format: int64
+                type: integer
               remediationHistory:
                 description: RemediationHistory records all remediation actions
                 items:

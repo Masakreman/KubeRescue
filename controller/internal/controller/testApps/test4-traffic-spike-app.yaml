@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test4-traffic-spike-app
+  labels:
+    app: test4-traffic-spike-app
+    test: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test4-traffic-spike-app
+  template:
+    metadata:
+      labels:
+        app: test4-traffic-spike-app
+    spec:
+      containers:
+      - name: traffic-simulator
+        image: python:3.9-slim
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          cat > /app.py << 'EOF'
+          import time
+          import random
+          import logging
+          import socket
+
+          # Configure logging
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger()
+
+          hostname = socket.gethostname()
+
+          def log_standard_error(severity, message):
+              """Log in a standard format that works with any log parser"""
+              if severity == "error":
+                  logger.error(f"ERROR: {message}")
+              elif severity == "warning":
+                  logger.warning(f"WARNING: {message}")
+              else:
+                  logger.info(f"INFO: {message}")
+
+          def simulate_traffic_spike():
+              # Phase 1: Traffic warning
+              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU: 75%")
+              time.sleep(5)
+              
+              # Phase 2: Initial error
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU: 85%")
+              time.sleep(5)
+              
+              # Phase 3: Critical error
+              log_standard_error("error", f"CRITICAL: Service overloaded on {hostname}, CPU: 95%")
+              time.sleep(10)
+
+          # Main loop
+          spike_countdown = random.randint(3, 6)
+
+          while True:
+              logger.info(f"Normal traffic on {hostname}, CPU: 30%")
+              time.sleep(10)
+              
+              # Count down to next spike
+              spike_countdown -= 1
+              
+              if spike_countdown <= 0:
+                  simulate_traffic_spike()
+                  spike_countdown = random.randint(3, 6)
+          EOF
+          
+          python /app.py
