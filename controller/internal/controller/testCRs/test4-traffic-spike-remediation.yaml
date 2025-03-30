@@ -1,7 +1,7 @@
 apiVersion: remediation.kuberescue.io/v1alpha1
 kind: LogRemediation
 metadata:
-  name: traffic-spike-remediation
+  name: test4-traffic-spike-remediation
 spec:
   sources:
   - type: deployment

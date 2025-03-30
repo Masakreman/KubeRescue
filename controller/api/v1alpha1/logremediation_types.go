@@ -109,6 +109,9 @@ type LogRemediationStatus struct {
 
 	// RemediationHistory records all remediation actions
 	RemediationHistory []RemediationHistoryEntry `json:"remediationHistory,omitempty"`
+
+	// ObservedGeneration is the most recent generation observed for this LogRemediation
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 //+kubebuilder:object:root=true
