@@ -216,6 +216,11 @@ spec:
                 description: LastConfigured is the last time the remediation was configured
                 format: date-time
                 type: string
+              lastProcessedTimestamp:
+                description: Store the timestamp of the most recent log processed
+                  in the CR's status
+                format: date-time
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed
                   for this LogRemediation

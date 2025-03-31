@@ -112,6 +112,9 @@ type LogRemediationStatus struct {
 
 	// ObservedGeneration is the most recent generation observed for this LogRemediation
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Store the timestamp of the most recent log processed in the CR's status
+	LastProcessedTimestamp *metav1.Time `json:"lastProcessedTimestamp,omitempty"`
 }
 
 //+kubebuilder:object:root=true

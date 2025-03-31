@@ -704,6 +704,12 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		appLabelFilter = fmt.Sprintf(`,"must": [{"bool": {"should": [%s]}}]`, strings.Join(appFilters, ","))
 	}
 
+	timeFilter := "now-2m" // Default fallback
+	if lr.Status.LastProcessedTimestamp != nil {
+		// Convert to RFC3339 format that Elasticsearch understands
+		timeFilter = lr.Status.LastProcessedTimestamp.Format(time.RFC3339)
+	}
+
 	// Construct a more effective query with time constraints
 	// Note: This query structure allows for more flexibility in log format
 	query := fmt.Sprintf(`{
@@ -711,13 +717,13 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
             "bool": {
                 "should": [%s],
                 "filter": [
-                    {"range": {"@timestamp": {"gte": "now-30m"}}}
+                    {"range": {"@timestamp": {"gte": "%s"}}}
                 ]%s
             }
         },
         "sort": [{"@timestamp": {"order": "desc"}}],
         "size": 100
-    }`, strings.Join(matchQueries, ","), appLabelFilter)
+    }`, strings.Join(matchQueries, ","), timeFilter, appLabelFilter)
 
 	logger.Info("Querying Elasticsearch", "endpoint", esEndpoint, "query", query)
 
@@ -762,6 +768,12 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			"status", resp.Status,
 			"body", string(body))
 		return fmt.Errorf("elasticsearch query failed with status %s", resp.Status)
+	}
+
+	lr.Status.LastProcessedTimestamp = &metav1.Time{Time: time.Now()}
+	if err := r.Status().Update(ctx, lr); err != nil {
+		logger.Error(err, "Failed to Fetch last processed log timestamp")
+		return err
 	}
 
 	// Parse response
