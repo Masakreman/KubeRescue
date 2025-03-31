@@ -716,7 +716,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
             }
         },
         "sort": [{"@timestamp": {"order": "desc"}}],
-        "size": 50
+        "size": 100
     }`, strings.Join(matchQueries, ","), appLabelFilter)
 
 	logger.Info("Querying Elasticsearch", "endpoint", esEndpoint, "query", query)
@@ -1038,8 +1038,16 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 						return nil
 
 					case "scale":
-						if err := r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern); err != nil {
+						if err := r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, false); err != nil {
 							logger.Error(err, "Failed to scale resource", "pod", podName)
+							continue
+						}
+						// We've taken an action, so return
+						return nil
+
+					case "recovery":
+						if err := r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, true); err != nil {
+							logger.Error(err, "Failed to perform recovery scaling", "pod", podName)
 							continue
 						}
 						// We've taken an action, so return
@@ -1091,11 +1099,12 @@ func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *re
 }
 
 // performResourceScaling handles scaling resources with automatic owner detection
+// isScaleDown indicates whether this is a scale-down (recovery) operation
 func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
-	namespace, podName, errorPattern string) error {
+	namespace, podName, errorPattern string, isScaleDown bool) error {
 
 	logger := log.FromContext(ctx)
-	logger.Info("Performing scaling remediation", "pod", podName, "namespace", namespace)
+	logger.Info("Performing scaling remediation", "pod", podName, "namespace", namespace, "isScaleDown", isScaleDown)
 
 	// Get the pod to determine its owner
 	pod := &corev1.Pod{}
@@ -1151,6 +1160,7 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 	// Get current replica count based on owner kind
 	var currentReplicas int32
 	var maxReplicas int32 = 10 // Default max replicas, could be configurable via CRD
+	var minReplicas int32 = 1  // Minimum number of replicas
 
 	switch ownerKind {
 	case "Deployment":
@@ -1171,7 +1181,13 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 			for _, hpa := range hpaList.Items {
 				if hpa.Spec.ScaleTargetRef.Kind == "Deployment" && hpa.Spec.ScaleTargetRef.Name == ownerName {
 					maxReplicas = hpa.Spec.MaxReplicas
-					logger.Info("Found HPA, using its maxReplicas", "hpa", hpa.Name, "maxReplicas", maxReplicas)
+					if hpa.Spec.MinReplicas != nil {
+						minReplicas = *hpa.Spec.MinReplicas
+					}
+					logger.Info("Found HPA, using its min/max replicas",
+						"hpa", hpa.Name,
+						"minReplicas", minReplicas,
+						"maxReplicas", maxReplicas)
 					break
 				}
 			}
@@ -1190,29 +1206,57 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 		}
 	}
 
-	// Apply scaling logic
-	if currentReplicas >= maxReplicas {
-		logger.Info("Resource is already at max replicas, switching to restart remediation",
-			"kind", ownerKind, "name", ownerName, "currentReplicas", currentReplicas, "maxReplicas", maxReplicas)
+	var newReplicas int32
 
-		// When scaling is maxed out, fall back to restart
-		return r.performPodRestart(ctx, lr, namespace, podName, errorPattern)
+	if isScaleDown {
+		// Scale down logic - reduce by 25% of current replicas
+		scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
+		if scaleIncrement < 1 {
+			scaleIncrement = 1
+		}
+
+		newReplicas = currentReplicas - scaleIncrement
+		if newReplicas < minReplicas {
+			newReplicas = minReplicas
+		}
+
+		// Don't do anything if already at minimum
+		if currentReplicas <= minReplicas {
+			logger.Info("Resource is already at minimum replicas, no scaling needed",
+				"kind", ownerKind, "name", ownerName, "currentReplicas", currentReplicas, "minReplicas", minReplicas)
+
+			// Record no-op action
+			return r.recordRemediationAction(ctx, lr, podName, errorPattern, "recovery:no-op:min")
+		}
+
+		logger.Info("Recovery action: scaling down resource", "kind", ownerKind, "name", ownerName,
+			"from", currentReplicas, "to", newReplicas)
+	} else {
+		// Scale up logic
+		// If already at max replicas, switch to restart
+		if currentReplicas >= maxReplicas {
+			logger.Info("Resource is already at max replicas, switching to restart remediation",
+				"kind", ownerKind, "name", ownerName, "currentReplicas", currentReplicas, "maxReplicas", maxReplicas)
+
+			// When scaling is maxed out, fall back to restart
+			return r.performPodRestart(ctx, lr, namespace, podName, errorPattern)
+		}
+
+		// Implement progressive scaling
+		// Scale by 25% rounded up, with minimum of 1, to get to max replicas faster for critical issues
+		scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
+		if scaleIncrement < 1 {
+			scaleIncrement = 1
+		}
+
+		newReplicas = currentReplicas + scaleIncrement
+		if newReplicas > maxReplicas {
+			newReplicas = maxReplicas
+		}
+
+		logger.Info("Scaling up resource", "kind", ownerKind, "name", ownerName,
+			"from", currentReplicas, "to", newReplicas)
 	}
-
-	// Implement progressive scaling
-	// Scale by 25% rounded up, with minimum of 1, to get to max replicas faster for critical issues
-	scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
-	if scaleIncrement < 1 {
-		scaleIncrement = 1
-	}
-
-	newReplicas := currentReplicas + scaleIncrement
-	if newReplicas > maxReplicas {
-		newReplicas = maxReplicas
-	}
-
-	logger.Info("Scaling resource", "kind", ownerKind, "name", ownerName,
-		"from", currentReplicas, "to", newReplicas)
 
 	// Apply the scaling based on owner kind
 	switch ownerKind {

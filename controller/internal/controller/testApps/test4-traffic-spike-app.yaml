@@ -44,9 +44,9 @@ spec:
           def log_standard_error(severity, message):
               """Log in a standard format that works with any log parser"""
               if severity == "error":
-                  logger.error(f"ERROR: {message}")
+                  logger.error(f"ERROR {message}")
               elif severity == "warning":
-                  logger.warning(f"WARNING: {message}")
+                  logger.warning(f"WARNING {message}")
               else:
                   logger.info(f"INFO: {message}")
 
@@ -62,6 +62,11 @@ spec:
               # Phase 3: Critical error
               log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU: 95%")
               time.sleep(10)
+              
+              # NEW: Phase 4: Recovery
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU: 45%")
+              time.sleep(5)
+              log_standard_error("info", f"RECOVERY Service stable on {hostname}, CPU: 30%")
 
           # Main loop
           spike_countdown = random.randint(3, 6)
