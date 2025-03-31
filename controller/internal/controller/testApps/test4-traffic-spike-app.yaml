@@ -60,7 +60,7 @@ spec:
               time.sleep(5)
               
               # Phase 3: Critical error
-              log_standard_error("error", f"CRITICAL: Service overloaded on {hostname}, CPU: 95%")
+              log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU: 95%")
               time.sleep(10)
 
           # Main loop

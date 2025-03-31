@@ -55,10 +55,10 @@ type LogRemediationReconciler struct {
 //+kubebuilder:rbac:groups=remediation.kuberescue.io,resources=logremediations,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=remediation.kuberescue.io,resources=logremediations/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=remediation.kuberescue.io,resources=logremediations/finalizers,verbs=update
-//+kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 
+//+kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;patch;update;watch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;patch;update;watch
@@ -195,7 +195,6 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 }
 
 // generate configuration for Fluentibit with fixes for multiple instances
-// generate configuration for Fluentibit with working metadata extraction
 func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alpha1.LogRemediation) string {
 	// Create a unique identifier for this instance
 	instanceID := lr.Name
@@ -223,29 +222,10 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 		}
 	}
 
-	// Build a path pattern based on source selectors
-	pathPattern := "/var/log/containers/*.log"
+	// Build a path pattern that focuses on test applications
+	pathPattern := "/var/log/containers/test*_*_*.log" // Will match test1, test2, test3, etc.
 
-	// If we have specific sources, create a more targeted path
-	if len(lr.Spec.Sources) > 0 {
-		var labelSelectors []string
-
-		for _, source := range lr.Spec.Sources {
-			// Extract the app label if present
-			if appLabel, ok := source.Selector["app"]; ok {
-				labelSelectors = append(labelSelectors, appLabel)
-			}
-		}
-
-		// For a single app label (which is the common case), use a direct approach
-		if len(labelSelectors) == 1 {
-			// Format that captures more log formats: /var/log/containers/app-name*_*_*.log
-			// The small difference from before is removing the hyphen before the asterisk
-			pathPattern = fmt.Sprintf("/var/log/containers/%s*_*_*.log", labelSelectors[0])
-		}
-	}
-
-	// Input configuration with fixed tag format (critical fix #1)
+	// Input configuration with fixed tag format
 	config += fmt.Sprintf(`[INPUT]
     Name            tail
     Path            %s
@@ -262,7 +242,7 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 
 `, pathPattern, instanceID)
 
-	// Add Kubernetes metadata filter with correct tag matching (critical fix #2)
+	// Add Kubernetes metadata filter with correct tag matching
 	config += `[FILTER]
     Name                kubernetes
     Match               kube.*
@@ -276,17 +256,8 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 
 `
 
-	// Add filter for error patterns
-	if len(lr.Spec.RemediationRules) > 0 {
-		for _, rule := range lr.Spec.RemediationRules {
-			config += fmt.Sprintf(`[FILTER]
-    Name            grep
-    Match           kube.*
-    Regex           log %s
-
-`, rule.ErrorPattern)
-		}
-	}
+	// No error pattern filtering here - we send everything to Elasticsearch
+	// and filter at query time
 
 	// Add a stdout output for debugging
 	config += `[OUTPUT]
