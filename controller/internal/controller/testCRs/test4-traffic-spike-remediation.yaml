@@ -17,10 +17,10 @@ spec:
   remediationRules:
   - errorPattern: "High traffic on .*, service degrading"
     action: scale
-    cooldownPeriod: 180
+    cooldownPeriod: 60
   - errorPattern: "CRITICAL Service overloaded"
     action: restart
-    cooldownPeriod: 300
+    cooldownPeriod: 360
   - errorPattern: "RECOVERY Traffic normalizing"
     action: recovery
     cooldownPeriod: 180
