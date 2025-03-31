@@ -59,6 +59,11 @@ type LogRemediationReconciler struct {
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 
+//+kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;patch;update;watch
+//+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;patch;update;watch
+//+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
+
 // Reconcile handles the main reconciliation loop for LogRemediation
 func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -234,8 +239,9 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 
 		// For a single app label (which is the common case), use a direct approach
 		if len(labelSelectors) == 1 {
-			// Format: /var/log/containers/app-name-*_*_*.log
-			pathPattern = fmt.Sprintf("/var/log/containers/%s-*_*_*.log", labelSelectors[0])
+			// Format that captures more log formats: /var/log/containers/app-name*_*_*.log
+			// The small difference from before is removing the hyphen before the asterisk
+			pathPattern = fmt.Sprintf("/var/log/containers/%s*_*_*.log", labelSelectors[0])
 		}
 	}
 
@@ -251,6 +257,8 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
     Skip_Long_Lines On
     DB              /var/lib/fluent-bit/%s.db
     Read_from_Head  True
+    Ignore_Older    5m  # Don't ignore older logs initially
+    Exit_On_Eof     false
 
 `, pathPattern, instanceID)
 

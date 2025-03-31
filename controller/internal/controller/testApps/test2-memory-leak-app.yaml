@@ -30,53 +30,34 @@ spec:
           cat > /app.py << 'EOF'
           import time
           import random
-          import logging
-          import datetime
-          import os
           import socket
-
-          # Configure logging
-          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-          logger = logging.getLogger()
 
           # Memory leak simulation
           memory_leak = []
           hostname = socket.gethostname()
 
-          def log_standard_error(severity, message):
-              """Log in a standard format that works with any log parser"""
-              if severity == "error":
-                  logger.error(f"ERROR: {message}")
-              elif severity == "warning":
-                  logger.warning(f"WARNING: {message}")
-              else:
-                  logger.info(f"INFO: {message}")
-
-          def simulate_memory_leak():
-              global memory_leak
-              leak_size = random.randint(1000, 5000)
-              memory_leak.append("x" * 1000 * leak_size)
-              current_memory = sum(len(x) for x in memory_leak) / (1024 * 1024)
-              
-              if current_memory > 40:
-                  log_standard_error("warning", f"Memory usage increasing on {hostname}: {current_memory:.2f} MB")
-              
-              if current_memory > 70:
-                  log_standard_error("error", f"High memory usage detected on {hostname}: {current_memory:.2f} MB")
-              
-              if current_memory > 100:
-                  log_standard_error("error", f"CRITICAL: Memory threshold exceeded on {hostname}: {current_memory:.2f} MB")
-                  # Reset some memory to avoid OOMKill but maintain leak pattern
-                  memory_leak = memory_leak[-len(memory_leak)//3:]
-
           # Main loop
           while True:
-              logger.info(f"Application running normally on {hostname}")
+              print("INFO Application running normally", flush=True)
               time.sleep(5)
               
               # Simulate memory leak with increasing probability
               if random.random() < 0.3:
-                  simulate_memory_leak()
+                  # Add memory
+                  leak_size = random.randint(1000, 5000)
+                  memory_leak.append("x" * 1000 * leak_size)
+                  current_memory = sum(len(x) for x in memory_leak) / (1024 * 1024)
+                  
+                  if current_memory > 40:
+                      print("WARNING Memory usage increasing: {:.2f} MB".format(current_memory), flush=True)
+                  
+                  if current_memory > 70:
+                      print("MEMORY_ERROR High memory usage detected: {:.2f} MB".format(current_memory), flush=True)
+                  
+                  if current_memory > 100:
+                      print("CRITICAL_MEMORY_EXCEEDED Memory threshold at {:.2f} MB".format(current_memory), flush=True)
+                      # Reset some memory to avoid OOMKill but maintain leak pattern
+                      memory_leak = memory_leak[-len(memory_leak)//3:]
           EOF
           
-          python /app.py
+          python -u /app.py

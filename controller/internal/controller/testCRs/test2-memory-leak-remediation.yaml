@@ -12,12 +12,9 @@ spec:
     port: 9200
     index: kubernetes-logs
   fluentbitConfig:
-    bufferSize: "10MB"
+    bufferSize: "200MB"
     flushInterval: 1
   remediationRules:
-  - errorPattern: "High memory usage detected"
+  - errorPattern: "MEMORY_ERROR"
     action: scale
     cooldownPeriod: 180
-  - errorPattern: "CRITICAL: Memory threshold exceeded"
-    action: restart
-    cooldownPeriod: 300
