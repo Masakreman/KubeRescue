@@ -92,11 +92,12 @@ spec:
                   properties:
                     action:
                       description: Action to take when pattern is matched (restart,
-                        scale, exec)
+                        scale, exec, recovery)
                       enum:
                       - restart
                       - scale
                       - exec
+                      - recovery
                       type: string
                     cooldownPeriod:
                       default: 60
