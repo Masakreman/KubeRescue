@@ -18,6 +18,6 @@ spec:
   - errorPattern: "High traffic on .*, service degrading"
     action: scale
     cooldownPeriod: 180
-  - errorPattern: "CRITICAL: Service overloaded"
+  - errorPattern: "CRITICAL Service overloaded"
     action: restart
     cooldownPeriod: 300
