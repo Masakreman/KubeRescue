@@ -48,31 +48,31 @@ spec:
               elif severity == "warning":
                   logger.warning(f"WARNING {message}")
               else:
-                  logger.info(f"INFO: {message}")
+                  logger.info(f"INFO {message}")
 
           def simulate_traffic_spike():
               # Phase 1: Traffic warning
-              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU: 75%")
+              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU 75%")
               time.sleep(5)
               
               # Phase 2: Initial error
-              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU: 85%")
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 85%")
               time.sleep(5)
               
               # Phase 3: Critical error
-              log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU: 95%")
+              log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU 95%")
               time.sleep(10)
               
-              # NEW: Phase 4: Recovery
-              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU: 45%")
+              # Phase 4: Recovery
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 45%")
               time.sleep(5)
-              log_standard_error("info", f"RECOVERY Service stable on {hostname}, CPU: 30%")
+              log_standard_error("info", f"RECOVERY Service stable on {hostname}, CPU 30%")
 
           # Main loop
           spike_countdown = random.randint(3, 6)
 
           while True:
-              logger.info(f"Normal traffic on {hostname}, CPU: 30%")
+              logger.info(f"Normal traffic on {hostname}, CPU 30%")
               time.sleep(10)
               
               # Count down to next spike
