@@ -21,6 +21,6 @@ spec:
   - errorPattern: "CRITICAL Service overloaded"
     action: restart
     cooldownPeriod: 300
-  - errorPattern: "RECOVERY Service stable"
-    action: scale
-    cooldownPeriod: 60
+  - errorPattern: "RECOVERY Traffic normalizing"
+    action: recovery
+    cooldownPeriod: 180
