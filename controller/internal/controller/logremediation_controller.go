@@ -223,7 +223,7 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 	}
 
 	// Build a path pattern that focuses on test applications
-	pathPattern := "/var/log/containers/test*_*_*.log" // Will match test1, test2, test3, etc.
+	pathPattern := "/var/log/containers/test*_*_*.log" // Will match testApps: test1, test2, test3, etc.
 
 	// Input configuration with fixed tag format
 	config += fmt.Sprintf(`[INPUT]
@@ -665,6 +665,7 @@ func (r *LogRemediationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Check for errors and Perform remediation if required
+// Check for errors and Perform remediation if required
 func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
 
@@ -687,10 +688,9 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		lr.Spec.ElasticsearchConfig.Port,
 		lr.Spec.ElasticsearchConfig.Index)
 
-	// Build better query that targets specific error patterns
+	// Build query for error patterns
 	var matchQueries []string
 	for _, rule := range lr.Spec.RemediationRules {
-		// Create a match query for each error pattern - using match instead of match_phrase for better flexibility
 		matchQueries = append(matchQueries, fmt.Sprintf(`{"match": {"log": "%s"}}`, rule.ErrorPattern))
 	}
 
@@ -704,14 +704,39 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		appLabelFilter = fmt.Sprintf(`,"must": [{"bool": {"should": [%s]}}]`, strings.Join(appFilters, ","))
 	}
 
-	timeFilter := "now-2m" // Default fallback
+	// This is a constrained time window to avoid getting stuck processing logs in the past
+	// We Use either:
+	// 1. The last processed timestamp if it's recent (within the max window)
+	// 2. Or a limited time window in the past (e.g.,  minutes) to avoid falling too far behind
+
+	// Max time window to look back for logs (3 minutes by default)
+	maxLookbackWindow := 3 * time.Minute
+
+	// Determine the time filter start point
+	var timeFilterStart time.Time
 	if lr.Status.LastProcessedTimestamp != nil {
-		// Convert to RFC3339 format that Elasticsearch understands
-		timeFilter = lr.Status.LastProcessedTimestamp.Format(time.RFC3339)
+		lastProcessed := lr.Status.LastProcessedTimestamp.Time
+		// Use the last processed time if it's within our max window
+		// Otherwise, use the max lookback window to avoid getting stuck in the past
+		if time.Since(lastProcessed) <= maxLookbackWindow {
+			timeFilterStart = lastProcessed
+		} else {
+			// If the last processed time is too far in the past
+			// use a limited window of (e.g 3 Minutes) to avoid getting stuck processing old logs
+			timeFilterStart = time.Now().Add(-maxLookbackWindow)
+			logger.Info("Last processed timestamp is too old, using limited time window",
+				"last_processed", lastProcessed,
+				"using_window_from", timeFilterStart)
+		}
+	} else {
+		// If no last processed timestamp, look back by the max window
+		timeFilterStart = time.Now().Add(-maxLookbackWindow)
 	}
 
-	// Construct a more effective query with time constraints
-	// Note: This query structure allows for more flexibility in log format
+	// Format the time for Elasticsearch
+	timeFilter := timeFilterStart.Format(time.RFC3339)
+
+	// Construct query with time constraints and ascending sort order
 	query := fmt.Sprintf(`{
         "query": {
             "bool": {
@@ -721,11 +746,11 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
                 ]%s
             }
         },
-        "sort": [{"@timestamp": {"order": "desc"}}],
+        "sort": [{"@timestamp": {"order": "asc"}}],
         "size": 100
     }`, strings.Join(matchQueries, ","), timeFilter, appLabelFilter)
 
-	logger.Info("Querying Elasticsearch", "endpoint", esEndpoint, "query", query)
+	logger.Info("Querying Elasticsearch", "endpoint", esEndpoint, "timeFilter", timeFilter)
 
 	// Query Elasticsearch
 	req, err := http.NewRequest("POST", esEndpoint, strings.NewReader(query))
@@ -734,13 +759,11 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Add basic auth if credentials are provided
+	// Add authentication
 	if lr.Spec.ElasticsearchConfig.SecretRef != "" {
 		// In a real implementation, you would fetch credentials from the secret
-		// For debugging, we're setting default credentials
 		req.SetBasicAuth("elastic", "changeme")
 	} else {
-		// Always set default credentials if no secret is provided
 		req.SetBasicAuth("elastic", "changeme")
 	}
 
@@ -760,20 +783,12 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return err
 	}
 
-	logger.Info("Elasticsearch response", "status", resp.Status, "body_size", len(body))
-
 	// Check for successful response
 	if resp.StatusCode != http.StatusOK {
 		logger.Error(nil, "Elasticsearch query failed",
 			"status", resp.Status,
 			"body", string(body))
 		return fmt.Errorf("elasticsearch query failed with status %s", resp.Status)
-	}
-
-	lr.Status.LastProcessedTimestamp = &metav1.Time{Time: time.Now()}
-	if err := r.Status().Update(ctx, lr); err != nil {
-		logger.Error(err, "Failed to Fetch last processed log timestamp")
-		return err
 	}
 
 	// Parse response
@@ -783,21 +798,20 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return err
 	}
 
-	// Extract hits from the response
+	// Extract hits
 	hits, ok := esResult["hits"]
 	if !ok {
 		logger.Error(nil, "Missing 'hits' field in response")
 		return fmt.Errorf("missing 'hits' field in Elasticsearch response")
 	}
 
-	// Convert hits to map
 	hitsMap, ok := hits.(map[string]interface{})
 	if !ok {
 		logger.Error(nil, "Expected 'hits' to be a map", "type", fmt.Sprintf("%T", hits))
 		return fmt.Errorf("invalid 'hits' field type in Elasticsearch response")
 	}
 
-	// Check if we have hits total
+	// Check total hits count
 	totalObj, hasTotalHits := hitsMap["total"]
 	if hasTotalHits {
 		totalMap, isMap := totalObj.(map[string]interface{})
@@ -815,15 +829,39 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return fmt.Errorf("missing 'hits.hits' field in Elasticsearch response")
 	}
 
-	// Convert hits list to array
 	hitsArray, ok := hitsList.([]interface{})
 	if !ok {
 		logger.Error(nil, "Expected 'hits.hits' to be an array", "type", fmt.Sprintf("%T", hitsList))
 		return fmt.Errorf("invalid 'hits.hits' field type in Elasticsearch response")
 	}
 
-	// Log the number of hits
 	logger.Info("Found log entries matching error patterns", "count", len(hitsArray))
+
+	// If no hits, return early
+	if len(hitsArray) == 0 {
+		return nil
+	}
+
+	// Track processed timestamps to update lastProcessedTimestamp
+	var latestTimestamp time.Time
+
+	// Track active cooldown periods to avoid processing logs that would be ignored
+	cooldownMap := make(map[string]time.Time)
+
+	// Initialize cooldown map from existing remediation history
+	for _, history := range lr.Status.RemediationHistory {
+		for _, rule := range lr.Spec.RemediationRules {
+			if rule.ErrorPattern == history.Pattern {
+				key := fmt.Sprintf("%s:%s", history.Pattern, history.PodName)
+				cooldownExpiry := history.Timestamp.Add(time.Duration(rule.CooldownPeriod) * time.Second)
+				cooldownMap[key] = cooldownExpiry
+				break
+			}
+		}
+	}
+
+	// Track number of actions performed
+	actionsPerformed := 0
 
 	// Process hits and perform remediation
 	for _, hitObj := range hitsArray {
@@ -837,10 +875,41 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			continue
 		}
 
-		// Try to get log message (might be under different paths depending on your setup)
-		logMsg := ""
+		// Extract timestamp
+		var logTimestamp time.Time
+		if timestampRaw, hasTimestamp := source["@timestamp"]; hasTimestamp {
+			if timestampStr, ok := timestampRaw.(string); ok {
+				var parseErr error
+				logTimestamp, parseErr = time.Parse(time.RFC3339, timestampStr)
+				if parseErr != nil {
+					// Try alternative format if RFC3339 fails
+					logTimestamp, parseErr = time.Parse("2006-01-02T15:04:05.000Z", timestampStr)
+					if parseErr != nil {
+						// Default to current time if parsing fails
+						logTimestamp = time.Now()
+					}
+				}
+			}
+		} else {
+			// Default to current time if no timestamp
+			logTimestamp = time.Now()
+		}
 
-		// Try different paths where the log message might be found
+		// Skip very old logs (older than our max window)
+		if time.Since(logTimestamp) > maxLookbackWindow {
+			logger.Info("Skipping old log entry outside our time window",
+				"log_time", logTimestamp,
+				"window_start", timeFilterStart)
+			continue
+		}
+
+		// Update latest timestamp we've seen
+		if logTimestamp.After(latestTimestamp) {
+			latestTimestamp = logTimestamp
+		}
+
+		// Extract log message
+		logMsg := ""
 		logPaths := []string{"log", "message", "log_processed"}
 		for _, path := range logPaths {
 			if logRaw, hasLog := source[path]; hasLog {
@@ -851,7 +920,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			}
 		}
 
-		// If still no log message, check if it's nested under kubernetes
+		// Check nested kubernetes log
 		if logMsg == "" {
 			if k8s, hasK8s := source["kubernetes"].(map[string]interface{}); hasK8s {
 				if containerLog, hasLog := k8s["log"].(string); hasLog {
@@ -861,126 +930,111 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		}
 
 		if logMsg == "" {
-			logger.Info("No log message found in document", "source_keys", reflect.ValueOf(source).MapKeys())
+			logger.Info("No log message found in document")
 			continue
 		}
 
-		// Try to extract kubernetes metadata - handle various formats
+		// Extract pod info (name and namespace)
 		podName := ""
 		namespace := ""
 
-		// First, try the standard format
+		// Try standard kubernetes format
 		k8sRaw, hasK8s := source["kubernetes"]
 		if hasK8s {
 			if k8s, ok := k8sRaw.(map[string]interface{}); ok {
-				// Try different paths for pod name
-				podNameKeys := []string{"pod_name", "pod", "pod_id", "container_name"}
-				for _, key := range podNameKeys {
-					if podNameRaw, hasPod := k8s[key]; hasPod {
-						if podNameStr, ok := podNameRaw.(string); ok {
-							podName = podNameStr
+				// Try common fields for pod name
+				podNameFields := []string{"pod_name", "pod", "pod_id", "container_name"}
+				for _, field := range podNameFields {
+					if val, has := k8s[field]; has {
+						if str, ok := val.(string); ok {
+							podName = str
 							break
 						}
 					}
 				}
 
-				// Try different paths for namespace
-				nsKeys := []string{"namespace_name", "namespace", "ns"}
-				for _, key := range nsKeys {
-					if nsRaw, hasNs := k8s[key]; hasNs {
-						if nsStr, ok := nsRaw.(string); ok {
-							namespace = nsStr
+				// Try common fields for namespace
+				nsFields := []string{"namespace_name", "namespace", "ns"}
+				for _, field := range nsFields {
+					if val, has := k8s[field]; has {
+						if str, ok := val.(string); ok {
+							namespace = str
 							break
 						}
 					}
 				}
 
-				// Also check labels for pod name and namespace
+				// Check labels
 				if labels, hasLabels := k8s["labels"].(map[string]interface{}); hasLabels {
-					if podNameRaw, hasPod := labels["pod-template-hash"]; hasPod && podName == "" {
-						if podNameStr, ok := podNameRaw.(string); ok {
-							podName = podNameStr
+					if val, has := labels["pod-template-hash"]; has && podName == "" {
+						if str, ok := val.(string); ok {
+							podName = str
 						}
 					}
-
-					if nsRaw, hasNs := labels["namespace"]; hasNs && namespace == "" {
-						if nsStr, ok := nsRaw.(string); ok {
-							namespace = nsStr
+					if val, has := labels["namespace"]; has && namespace == "" {
+						if str, ok := val.(string); ok {
+							namespace = str
 						}
 					}
 				}
 			}
 		}
 
-		// If not found in standard format, look for it elsewhere
+		// Fallbacks for pod/namespace
 		if podName == "" || namespace == "" {
-			// Check if we have it in metadata
-			metadataRaw, hasMetadata := source["metadata"]
-			if hasMetadata {
+			// Check metadata
+			if metadataRaw, has := source["metadata"]; has {
 				if metadata, ok := metadataRaw.(map[string]interface{}); ok {
-					if podNameRaw, hasPod := metadata["pod"]; hasPod && podName == "" {
-						if podNameStr, ok := podNameRaw.(string); ok {
-							podName = podNameStr
+					if val, has := metadata["pod"]; has && podName == "" {
+						if str, ok := val.(string); ok {
+							podName = str
 						}
 					}
-
-					if namespaceRaw, hasNamespace := metadata["namespace"]; hasNamespace && namespace == "" {
-						if namespaceStr, ok := namespaceRaw.(string); ok {
-							namespace = namespaceStr
+					if val, has := metadata["namespace"]; has && namespace == "" {
+						if str, ok := val.(string); ok {
+							namespace = str
 						}
 					}
 				}
 			}
 		}
 
-		// Check container name as a fallback for pod identification
+		// More fallbacks for pod name
 		if podName == "" && k8sRaw != nil {
 			if k8s, ok := k8sRaw.(map[string]interface{}); ok {
-				if containerNameRaw, hasContainer := k8s["container_name"]; hasContainer {
-					if containerStr, ok := containerNameRaw.(string); ok {
-						// Container name might include pod name with a format like: pod_name-container
-						parts := strings.Split(containerStr, "-")
+				if val, has := k8s["container_name"]; has {
+					if str, ok := val.(string); ok {
+						parts := strings.Split(str, "-")
 						if len(parts) > 1 {
 							podName = strings.Join(parts[:len(parts)-1], "-")
 						} else {
-							podName = containerStr
+							podName = str
 						}
 					}
 				}
 			}
 		}
 
-		// If we still don't have namespace, use the same as LogRemediation
+		// Default namespace
 		if namespace == "" {
 			namespace = lr.Namespace
 		}
 
-		// If we still don't have the pod name, try to extract from other fields
+		// Last resort - extract pod from log message
 		if podName == "" {
-			// Try to extract from log message if it contains pod name
-			// This is just an example - you may need to adjust the pattern
 			podPattern := regexp.MustCompile(`pod[=:]\s*([a-zA-Z0-9-]+)`)
 			if matches := podPattern.FindStringSubmatch(logMsg); len(matches) > 1 {
 				podName = matches[1]
 			}
-		}
 
-		if podName == "" {
-			logger.Info("Missing pod name in log entry, trying to find pod through app labels",
-				"namespace", namespace,
-				"log", logMsg)
-
-			// try to match based on app labels
-			if len(appLabels) > 0 && namespace != "" {
-				// List all pods
+			// Try app labels
+			if podName == "" && len(appLabels) > 0 && namespace != "" {
 				podList := &corev1.PodList{}
-
 				if err := r.List(ctx, podList); err != nil {
 					logger.Error(err, "Failed to list pods")
 					continue
 				}
 
-				// Manually filter pods by namespace and app label
 				for _, pod := range podList.Items {
 					if pod.Namespace == namespace {
 						for _, appLabel := range appLabels {
@@ -997,12 +1051,12 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			}
 
 			if podName == "" {
-				logger.Info("Still couldn't find pod name, skipping", "log", logMsg)
+				logger.Info("Could not determine pod name, skipping", "log", logMsg)
 				continue
 			}
 		}
 
-		// Check against remediation rules
+		// Now check each remediation rule
 		for _, rule := range lr.Spec.RemediationRules {
 			matched, err := regexp.MatchString(rule.ErrorPattern, logMsg)
 			if err != nil {
@@ -1010,71 +1064,120 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				continue
 			}
 
-			if matched {
-				logger.Info("Error pattern matched",
-					"pattern", rule.ErrorPattern,
-					"pod", podName,
-					"namespace", namespace,
-					"log", logMsg)
+			if !matched {
+				continue
+			}
 
-				// Check if we've already performed remediation for this pod recently
-				shouldRemediate := true
-				if len(lr.Status.RemediationHistory) > 0 {
-					for _, historyEntry := range lr.Status.RemediationHistory {
-						// Skip if we've already remediated this pod for the same pattern
-						// within the cooldown period
-						if historyEntry.PodName == podName && historyEntry.Pattern == rule.ErrorPattern {
-							remedationTime := historyEntry.Timestamp.Time
-							cooldownPeriod := time.Duration(rule.CooldownPeriod) * time.Second
-							if time.Since(remedationTime) < cooldownPeriod {
-								logger.Info("Skipping remediation due to cooldown period",
-									"pod", podName,
-									"last_remediation", remedationTime,
-									"cooldown_period_seconds", rule.CooldownPeriod)
-								shouldRemediate = false
-								break
-							}
-						}
-					}
+			logger.Info("Error pattern matched",
+				"pattern", rule.ErrorPattern,
+				"pod", podName,
+				"namespace", namespace,
+				"log_timestamp", logTimestamp)
+
+			// Check cooldown
+			cooldownKey := fmt.Sprintf("%s:%s", rule.ErrorPattern, podName)
+			if cooldownExpiry, hasCooldown := cooldownMap[cooldownKey]; hasCooldown {
+				if time.Now().Before(cooldownExpiry) {
+					logger.Info("Skipping due to active cooldown period",
+						"pod", podName,
+						"pattern", rule.ErrorPattern,
+						"cooldown_expires", cooldownExpiry)
+					continue
+				}
+			}
+
+			// Check if this log is too old to act on (within time window but older than 1 minute)
+			if time.Since(logTimestamp) > time.Minute {
+				logger.Info("Log is older than 1 minute but within window, checking if still relevant",
+					"log_time", logTimestamp,
+					"age", time.Since(logTimestamp))
+
+				// For logs that are a bit old, we should verify if they're still relevant
+				// based on the action type. For example:
+
+				// For "scale" actions, check current scale status
+				if rule.Action == "scale" || rule.Action == "recovery" {
+					// Verify if scaling is still needed by checking the pod's owner's current state
+					// This would involve a check against the current state of the deployment/statefulset
+
+					// For demo purposes, we'll just log and proceed, but in production
+					// you would implement actual state checking here
+					logger.Info("Would verify scaling need here in production")
 				}
 
-				if shouldRemediate {
-					// Perform remediation based on action type
-					switch rule.Action {
-					case "restart":
-						if err := r.performPodRestart(ctx, lr, namespace, podName, rule.ErrorPattern); err != nil {
-							logger.Error(err, "Failed to restart pod", "pod", podName)
-							continue
-						}
-						// We've taken an action, so return
-						return nil
+				// For "restart" actions, check if pod is already restarted
+				if rule.Action == "restart" {
+					// Verify if the pod still exists and its start time
+					pod := &corev1.Pod{}
+					err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod)
 
-					case "scale":
-						if err := r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, false); err != nil {
-							logger.Error(err, "Failed to scale resource", "pod", podName)
-							continue
-						}
-						// We've taken an action, so return
-						return nil
+					// If pod not found or was started after the log timestamp, no need to restart
+					if err != nil || (err == nil && pod.Status.StartTime != nil &&
+						pod.Status.StartTime.After(logTimestamp)) {
 
-					case "recovery":
-						if err := r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, true); err != nil {
-							logger.Error(err, "Failed to perform recovery scaling", "pod", podName)
-							continue
-						}
-						// We've taken an action, so return
-						return nil
-
-					case "exec":
-						// Implement exec action as needed
-						logger.Info("Exec remediation not implemented yet")
-						// TODO: Implement exec remediation
+						logger.Info("Pod already restarted or doesn't exist, skipping restart action",
+							"pod", podName,
+							"pod_exists", err == nil,
+							"start_time", pod.Status.StartTime)
+						continue
 					}
 				}
 			}
+
+			// Perform remediation
+			var remediationErr error
+			switch rule.Action {
+			case "restart":
+				remediationErr = r.performPodRestart(ctx, lr, namespace, podName, rule.ErrorPattern)
+			case "scale":
+				remediationErr = r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, false)
+			case "recovery":
+				remediationErr = r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, true)
+			case "exec":
+				logger.Info("Exec remediation not implemented yet")
+				continue
+			}
+
+			if remediationErr != nil {
+				logger.Error(remediationErr, "Failed to execute remediation action",
+					"action", rule.Action,
+					"pod", podName)
+				continue
+			}
+
+			// Action succeeded - update cooldown
+			cooldownExpiry := time.Now().Add(time.Duration(rule.CooldownPeriod) * time.Second)
+			cooldownMap[cooldownKey] = cooldownExpiry
+			actionsPerformed++
+
+			// Refetch LogRemediation to get latest status
+			if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, lr); err != nil {
+				logger.Error(err, "Failed to refetch LogRemediation")
+				// Continue with stale data
+			}
+
+			// Only process first matching rule
+			break
+		}
+
+		// Limit actions per reconciliation
+		if actionsPerformed >= 3 {
+			logger.Info("Reached maximum remediation actions", "count", actionsPerformed)
+			break
 		}
 	}
 
+	// Update LastProcessedTimestamp
+	if !latestTimestamp.IsZero() {
+		// Add a small buffer to avoid edge cases
+		lr.Status.LastProcessedTimestamp = &metav1.Time{Time: latestTimestamp.Add(time.Second)}
+		if err := r.Status().Update(ctx, lr); err != nil {
+			logger.Error(err, "Failed to update last processed timestamp")
+			return err
+		}
+	}
+
+	logger.Info("Completed log remediation check", "actions_performed", actionsPerformed)
 	return nil
 }
 

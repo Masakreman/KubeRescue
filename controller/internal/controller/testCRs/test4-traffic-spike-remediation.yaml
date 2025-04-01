@@ -4,9 +4,9 @@ metadata:
   name: test4-traffic-spike-remediation
 spec:
   sources:
-  - type: deployment
-    selector:
-      app: test4-traffic-spike-app
+    - type: deployment
+      selector:
+        app: test4-traffic-spike-app
   elasticsearchConfig:
     host: elasticsearch.default.svc.cluster.local
     port: 9200
@@ -15,12 +15,12 @@ spec:
     bufferSize: "10MB"
     flushInterval: 1
   remediationRules:
-  - errorPattern: "High traffic on .*, service degrading"
-    action: scale
-    cooldownPeriod: 60
-  - errorPattern: "CRITICAL Service overloaded"
-    action: restart
-    cooldownPeriod: 360
-  - errorPattern: "RECOVERY Traffic normalizing"
-    action: recovery
-    cooldownPeriod: 180
+    - errorPattern: "High traffic on .*, service degrading"
+      action: scale
+      cooldownPeriod: 25    # Shorter cooldown to allow multiple scale operations
+    - errorPattern: "CRITICAL Service overloaded"
+      action: restart
+      cooldownPeriod: 60    # Longer cooldown to avoid multiple restarts
+    - errorPattern: "RECOVERY Traffic normalizing"
+      action: recovery
+      cooldownPeriod: 35    # Moderate cooldown for recovery scaling
