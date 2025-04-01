@@ -34,15 +34,9 @@ spec:
           import random
           import logging
           import socket
-          import os
-          from datetime import datetime
           
-          # Configure logging with ISO8601 timestamp format for better Elasticsearch compatibility
-          logging.basicConfig(
-              level=logging.INFO, 
-              format='%(asctime)s - %(levelname)s - %(message)s',
-              datefmt='%Y-%m-%dT%H:%M:%S%z'
-          )
+          # Configure logging
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
           logger = logging.getLogger()
           
           hostname = socket.gethostname()
@@ -56,119 +50,59 @@ spec:
               else:
                   logger.info(f"INFO {message}")
           
-          def simulate_scaling_phase():
-              """Phase 1: Trigger scaling to max replicas through multiple high traffic events"""
-              print(f"[{datetime.now().isoformat()}] Starting SCALE phase")
+          def simulate_traffic_spike():
+              # Phase 1: Traffic warning
+              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU 75%")
+              time.sleep(5)
               
-              # We'll generate multiple high traffic events to trigger scaling to max replicas
-              # Each one should cause a 25% increase in replicas
-              for i in range(4):  # 4 scaling events should get us close to max replicas
-                  # Log increasing traffic warning first
-                  cpu_level = 75 + i*2
-                  log_standard_error("warning", f"Traffic increasing on {hostname}, CPU {cpu_level}%")
-                  time.sleep(5)
-                  
-                  # Then the actual error that triggers scaling
-                  log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU {cpu_level+10}%")
-                  
-                  # Wait enough time for the controller to process this and scale up
-                  # This is longer than the cooldown period to ensure multiple scale actions
-                  print(f"[{datetime.now().isoformat()}] Waiting for scale event {i+1} to be processed")
-                  time.sleep(30)
-          
-          def simulate_restart_phase():
-              """Phase 2: Trigger restart action"""
-              print(f"[{datetime.now().isoformat()}] Starting RESTART phase")
-              
-              # Critical error that triggers pod restart
-              log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU 95%")
-              
-              # Wait for restart to be processed
-              # (If restart works, this script will stop and new pod will start)
-              print(f"[{datetime.now().isoformat()}] Waiting for restart to be processed")
-              time.sleep(60)
-              
-              # If we reach here, the restart didn't happen (should not reach in normal operation)
-              log_standard_error("warning", f"Expected restart didn't occur on {hostname}")
-          
-          def simulate_recovery_phase():
-              """Phase 3: Trigger recovery (scale down) action"""
-              print(f"[{datetime.now().isoformat()}] Starting RECOVERY phase")
-              
-              # Recovery message that triggers scale down
-              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 55%")
-              
-              # Wait for recovery to be processed
-              print(f"[{datetime.now().isoformat()}] Waiting for recovery to be processed")
-              time.sleep(40)
-              
-              # Log a second recovery message to potentially trigger another scale down
-              log_standard_error("info", f"RECOVERY Traffic further reduced on {hostname}, CPU 35%")
-              time.sleep(40)
-              
-              # Final stable message
-              log_standard_error("info", f"System fully stabilized on {hostname}, CPU 25%")
-          
-          # Maintain state across restarts
-          state_file = "/tmp/demo_state"
-          
-          # Function to determine which phase to run
-          def get_current_phase():
-              if not os.path.exists(state_file):
-                  # First run of the pod - start with scaling phase
-                  with open(state_file, "w") as f:
-                      f.write("scale")
-                  return "scale"
-              
-              with open(state_file, "r") as f:
-                  current_phase = f.read().strip()
-              
-              # Cycle through phases
-              next_phase = "scale"
-              if current_phase == "scale":
-                  next_phase = "restart"
-              elif current_phase == "restart":
-                  next_phase = "recovery"
-              
-              # Write next phase for potential next restart
-              with open(state_file, "w") as f:
-                  f.write(next_phase)
-              
-              return current_phase
-          
-          # Run the appropriate phase based on our state
-          phase = get_current_phase()
-          print(f"[{datetime.now().isoformat()}] Starting in {phase.upper()} phase")
-          
-          if phase == "scale":
-              simulate_scaling_phase()
-              simulate_restart_phase()  # Move to restart phase
-          elif phase == "restart":
-              # This phase should only run briefly before the pod is restarted
-              simulate_restart_phase()
-          elif phase == "recovery":
-              simulate_recovery_phase()
-          
-          # After completing the main demo phases, enter a quiet period
-          # then restart the whole cycle
-          print(f"[{datetime.now().isoformat()}] Entering quiet period before next cycle")
-          
-          # Reset the state file to start from scaling again after quiet period
-          with open(state_file, "w") as f:
-              f.write("scale")
-          
-          # Quiet period between cycles
-          quiet_time = 180  # 3 minutes quiet period between full cycles
-          
-          for i in range(quiet_time // 20):
-              logger.info(f"Normal traffic on {hostname}, CPU 30%, quiet period ({i+1}/{quiet_time//20})")
+              # Phase 2: Scale trigger - high traffic error
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 85%")
               time.sleep(20)
+              
+              # Additional scale triggers to reach max replicas (with shorter intervals)
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 87%")
+              time.sleep(20)
+              
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 89%")
+              time.sleep(20)
+              
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 92%")
+              time.sleep(20)
+              
+              # Phase 3: Restart trigger - critical overload error
+              log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU 95%")
+              time.sleep(45)  # Longer pause to ensure restart completes
+              
+              # Phase 4: Recovery trigger
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 65%")
+              time.sleep(40)
+              
+              # Additional recovery log for continued scale-down
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 45%")
+              time.sleep(40)
+              
+              # Final recovery to minimum
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 30%")
+              time.sleep(15)
+              
+              # Stable state
+              log_standard_error("info", f"Service stable on {hostname}, CPU 25%")
           
-          # Start new cycle
-          print(f"[{datetime.now().isoformat()}] Starting new demo cycle")
-          simulate_scaling_phase()
-          simulate_restart_phase()
-          # The pod will restart after this phase, so the cycle continues
+          # Main loop
+          spike_interval = random.randint(5, 7) * 60  # 5-7 minutes between spikes
+          
+          while True:
+              logger.info(f"Normal traffic on {hostname}, CPU 30%")
+              time.sleep(15)
+              
+              # Simulate a traffic spike
+              simulate_traffic_spike()
+              
+              # Quiet period between cycles
+              quiet_period = 120  # 2 minutes
+              for i in range(quiet_period // 15):
+                  logger.info(f"Normal traffic on {hostname}, CPU 30% - quiet period")
+                  time.sleep(15)
           EOF
           
           python /app.py
