@@ -92,11 +92,12 @@ spec:
                   properties:
                     action:
                       description: Action to take when pattern is matched (restart,
-                        scale, exec)
+                        scale, exec, recovery)
                       enum:
                       - restart
                       - scale
                       - exec
+                      - recovery
                       type: string
                     cooldownPeriod:
                       default: 60
@@ -213,6 +214,11 @@ spec:
                 type: array
               lastConfigured:
                 description: LastConfigured is the last time the remediation was configured
+                format: date-time
+                type: string
+              lastProcessedTimestamp:
+                description: Store the timestamp of the most recent log processed
+                  in the CR's status
                 format: date-time
                 type: string
               observedGeneration:

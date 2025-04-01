@@ -56,7 +56,7 @@ spec:
           def heal_service(service_name):
               if random.random() < 0.7:  # 70% chance of healing
                   services[service_name]["status"] = "healthy"
-                  logger.info(f"SERVICE_HEALED: {service_name} recovered automatically")
+                  logger.info(f"SERVICE_HEALED {service_name} recovered automatically")
                   return True
               return False
 
@@ -67,15 +67,15 @@ spec:
               
               # Log the failure with different severity based on the service
               if failed_service in ["auth-service", "database-service"]:
-                  logger.error(f"CRITICAL_SERVICE_FAILURE: {failed_service} is down, core functionality impacted")
+                  logger.error(f"CRITICAL_SERVICE_FAILURE {failed_service} is down, core functionality impacted")
               else:
-                  logger.warning(f"SERVICE_DEGRADED: {failed_service} is experiencing issues")
+                  logger.warning(f"SERVICE_DEGRADED {failed_service} is experiencing issues")
               
               # Propagate failures through dependencies
               for service, details in services.items():
                   if failed_service in details["dependencies"] and services[service]["status"] == "healthy":
                       services[service]["status"] = "degraded"
-                      logger.warning(f"CASCADE_FAILURE: {service} degraded due to dependency on {failed_service}")
+                      logger.warning(f"CASCADE_FAILURE {service} degraded due to dependency on {failed_service}")
 
           def check_system_health():
               # Count failed and degraded services
@@ -84,7 +84,7 @@ spec:
               
               # If too many services are affected, trigger a critical alert
               if failed > 1 or (failed + degraded) > 3:
-                  logger.error(f"SYSTEM_WIDE_FAILURE: Multiple services affected ({failed} failed, {degraded} degraded)")
+                  logger.error(f"SYSTEM_WIDE_FAILURE Multiple services affected ({failed} failed, {degraded} degraded)")
                   return False
               return True
 
@@ -109,7 +109,7 @@ spec:
               
               # If too many healing attempts failed, log critical error
               if healing_attempts > 5:
-                  logger.error("PERSISTENT_SERVICE_FAILURE: System unable to self-heal after multiple attempts")
+                  logger.error("PERSISTENT_SERVICE_FAILURE System unable to self-heal after multiple attempts")
                   healing_attempts = 0  # Reset counter
               
               # Check if it's time to trigger a new failure

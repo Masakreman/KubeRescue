@@ -34,48 +34,75 @@ spec:
           import random
           import logging
           import socket
-
+          
           # Configure logging
           logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
           logger = logging.getLogger()
-
+          
           hostname = socket.gethostname()
-
+          
           def log_standard_error(severity, message):
               """Log in a standard format that works with any log parser"""
               if severity == "error":
-                  logger.error(f"ERROR: {message}")
+                  logger.error(f"ERROR {message}")
               elif severity == "warning":
-                  logger.warning(f"WARNING: {message}")
+                  logger.warning(f"WARNING {message}")
               else:
-                  logger.info(f"INFO: {message}")
-
+                  logger.info(f"INFO {message}")
+          
           def simulate_traffic_spike():
               # Phase 1: Traffic warning
-              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU: 75%")
+              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU 75%")
               time.sleep(5)
               
-              # Phase 2: Initial error
-              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU: 85%")
-              time.sleep(5)
+              # Phase 2: Scale trigger - high traffic error
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 85%")
+              time.sleep(20)
               
-              # Phase 3: Critical error
-              log_standard_error("error", f"CRITICAL: Service overloaded on {hostname}, CPU: 95%")
-              time.sleep(10)
-
+              # Additional scale triggers to reach max replicas (with shorter intervals)
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 87%")
+              time.sleep(20)
+              
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 89%")
+              time.sleep(20)
+              
+              log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU 92%")
+              time.sleep(20)
+              
+              # Phase 3: Restart trigger - critical overload error
+              log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU 95%")
+              time.sleep(45)  # Longer pause to ensure restart completes
+              
+              # Phase 4: Recovery trigger
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 65%")
+              time.sleep(40)
+              
+              # Additional recovery log for continued scale-down
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 45%")
+              time.sleep(40)
+              
+              # Final recovery to minimum
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 30%")
+              time.sleep(15)
+              
+              # Stable state
+              log_standard_error("info", f"Service stable on {hostname}, CPU 25%")
+          
           # Main loop
-          spike_countdown = random.randint(3, 6)
-
+          spike_interval = random.randint(5, 7) * 60  # 5-7 minutes between spikes
+          
           while True:
-              logger.info(f"Normal traffic on {hostname}, CPU: 30%")
-              time.sleep(10)
+              logger.info(f"Normal traffic on {hostname}, CPU 30%")
+              time.sleep(15)
               
-              # Count down to next spike
-              spike_countdown -= 1
+              # Simulate a traffic spike
+              simulate_traffic_spike()
               
-              if spike_countdown <= 0:
-                  simulate_traffic_spike()
-                  spike_countdown = random.randint(3, 6)
+              # Quiet period between cycles
+              quiet_period = 120  # 2 minutes
+              for i in range(quiet_period // 15):
+                  logger.info(f"Normal traffic on {hostname}, CPU 30% - quiet period")
+                  time.sleep(15)
           EOF
           
           python /app.py

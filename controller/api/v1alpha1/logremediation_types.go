@@ -112,6 +112,9 @@ type LogRemediationStatus struct {
 
 	// ObservedGeneration is the most recent generation observed for this LogRemediation
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Store the timestamp of the most recent log processed in the CR's status
+	LastProcessedTimestamp *metav1.Time `json:"lastProcessedTimestamp,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -147,8 +150,8 @@ type RemediationRule struct {
 	// +kubebuilder:validation:Required
 	ErrorPattern string `json:"errorPattern"`
 
-	// Action to take when pattern is matched (restart, scale, exec)
-	// +kubebuilder:validation:Enum=restart;scale;exec
+	// Action to take when pattern is matched (restart, scale, exec, recovery)
+	// +kubebuilder:validation:Enum=restart;scale;exec;recovery
 	// +kubebuilder:validation:Required
 	Action string `json:"action"`
 
