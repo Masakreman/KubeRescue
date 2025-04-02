@@ -400,7 +400,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 					},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "default",
+					ServiceAccountName: "fluentbit",
 					Containers: []corev1.Container{
 						{
 							Name:  "fluentbit",
