@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	remediationv1alpha1 "github.com/Masakreman/KubeRescue/api/v1alpha1"
+	"github.com/Masakreman/KubeRescue/internal/metrics"
 )
 
 // LogRemediationReconciler reconciles a LogRemediation object
@@ -74,6 +75,8 @@ func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	err := r.Get(ctx, req.NamespacedName, logRemediation)
 	if err != nil {
 		if errors.IsNotFound(err) {
+			// Resource is gone, decrease active count
+			metrics.ActiveRemediations.WithLabelValues(req.Namespace).Dec()
 			// Request object not found, could have been deleted
 			logger.Info("LogRemediation resource not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
@@ -81,6 +84,11 @@ func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// Error reading the object - requeue the request
 		logger.Error(err, "Failed to get LogRemediation")
 		return ctrl.Result{}, err
+	}
+
+	// If this is a new resource, increment the active count
+	if logRemediation.Status.LastConfigured == nil {
+		metrics.ActiveRemediations.WithLabelValues(req.Namespace).Inc()
 	}
 
 	// Now that we have the object, check if resources need to be reconciled
@@ -755,6 +763,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	// Query Elasticsearch
 	req, err := http.NewRequest("POST", esEndpoint, strings.NewReader(query))
 	if err != nil {
+		metrics.LogProcessingErrors.Inc()
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -772,6 +781,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(err, "Failed to query Elasticsearch")
 		return err
 	}
@@ -785,6 +795,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 
 	// Check for successful response
 	if resp.StatusCode != http.StatusOK {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(nil, "Elasticsearch query failed",
 			"status", resp.Status,
 			"body", string(body))
@@ -794,6 +805,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	// Parse response
 	var esResult map[string]interface{}
 	if err := json.Unmarshal(body, &esResult); err != nil {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(err, "Failed to parse Elasticsearch response")
 		return err
 	}
@@ -801,12 +813,14 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	// Extract hits
 	hits, ok := esResult["hits"]
 	if !ok {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(nil, "Missing 'hits' field in response")
 		return fmt.Errorf("missing 'hits' field in Elasticsearch response")
 	}
 
 	hitsMap, ok := hits.(map[string]interface{})
 	if !ok {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(nil, "Expected 'hits' to be a map", "type", fmt.Sprintf("%T", hits))
 		return fmt.Errorf("invalid 'hits' field type in Elasticsearch response")
 	}
@@ -825,12 +839,14 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	// Extract hits list
 	hitsList, ok := hitsMap["hits"]
 	if !ok {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(nil, "Missing 'hits.hits' field in response")
 		return fmt.Errorf("missing 'hits.hits' field in Elasticsearch response")
 	}
 
 	hitsArray, ok := hitsList.([]interface{})
 	if !ok {
+		metrics.LogProcessingErrors.Inc()
 		logger.Error(nil, "Expected 'hits.hits' to be an array", "type", fmt.Sprintf("%T", hitsList))
 		return fmt.Errorf("invalid 'hits.hits' field type in Elasticsearch response")
 	}
@@ -1185,6 +1201,11 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
 	namespace, podName, errorPattern string) error {
 
+	startTime := time.Now()
+	defer func() {
+		metrics.RemediationLatency.WithLabelValues("restart", namespace).Observe(time.Since(startTime).Seconds())
+	}()
+
 	logger := log.FromContext(ctx)
 	logger.Info("Performing pod restart remediation", "pod", podName, "namespace", namespace)
 
@@ -1209,6 +1230,8 @@ func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *re
 
 	logger.Info("Pod deleted successfully, will be recreated by controller", "pod", podName)
 
+	metrics.RemediationsTotal.WithLabelValues("restart", errorPattern, namespace).Inc()
+
 	// Record the remediation action
 	return r.recordRemediationAction(ctx, lr, podName, errorPattern, "restart")
 }
@@ -1218,8 +1241,15 @@ func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *re
 func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
 	namespace, podName, errorPattern string, isScaleDown bool) error {
 
+	actionName := "scale"
+
 	logger := log.FromContext(ctx)
 	logger.Info("Performing scaling remediation", "pod", podName, "namespace", namespace, "isScaleDown", isScaleDown)
+
+	startTime := time.Now()
+	defer func() {
+		metrics.RemediationLatency.WithLabelValues("scale", namespace).Observe(time.Since(startTime).Seconds())
+	}()
 
 	// Get the pod to determine its owner
 	pod := &corev1.Pod{}
@@ -1324,6 +1354,7 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 	var newReplicas int32
 
 	if isScaleDown {
+		actionName = "recovery"
 		// Scale down logic - reduce by 25% of current replicas
 		scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
 		if scaleIncrement < 1 {
@@ -1376,8 +1407,10 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 	// Apply the scaling based on owner kind
 	switch ownerKind {
 	case "Deployment":
+		metrics.RemediationsTotal.WithLabelValues(actionName, errorPattern, namespace).Inc()
 		return r.scaleDeployment(ctx, namespace, ownerName, newReplicas, lr, podName, errorPattern)
 	case "StatefulSet":
+		metrics.RemediationsTotal.WithLabelValues(actionName, errorPattern, namespace).Inc()
 		return r.scaleStatefulSet(ctx, namespace, ownerName, newReplicas, lr, podName, errorPattern)
 	}
 
