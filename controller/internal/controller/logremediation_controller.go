@@ -673,9 +673,13 @@ func (r *LogRemediationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Check for errors and Perform remediation if required
-// Check for errors and Perform remediation if required
 func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
+
+	// Start timing the log processing
+	startTime := time.Now()
+	logsProcessed := 0
+	cooldownCount := make(map[string]int)
 
 	// Skip if no remediation rules defined
 	if len(lr.Spec.RemediationRules) == 0 {
@@ -711,11 +715,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		}
 		appLabelFilter = fmt.Sprintf(`,"must": [{"bool": {"should": [%s]}}]`, strings.Join(appFilters, ","))
 	}
-
-	// This is a constrained time window to avoid getting stuck processing logs in the past
-	// We Use either:
-	// 1. The last processed timestamp if it's recent (within the max window)
-	// 2. Or a limited time window in the past (e.g.,  minutes) to avoid falling too far behind
 
 	// Max time window to look back for logs (3 minutes by default)
 	maxLookbackWindow := 3 * time.Minute
@@ -790,6 +789,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	// Read response
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		metrics.LogProcessingErrors.Inc()
 		return err
 	}
 
@@ -871,8 +871,19 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				key := fmt.Sprintf("%s:%s", history.Pattern, history.PodName)
 				cooldownExpiry := history.Timestamp.Add(time.Duration(rule.CooldownPeriod) * time.Second)
 				cooldownMap[key] = cooldownExpiry
-				break
+
+				// Initialize cooldown counts for metrics
+				actionKey := fmt.Sprintf("%s:%s", rule.Action, lr.Namespace)
+				cooldownCount[actionKey]++
 			}
+		}
+	}
+
+	// Update cooldown metrics
+	for actionNs, count := range cooldownCount {
+		parts := strings.Split(actionNs, ":")
+		if len(parts) == 2 {
+			metrics.RemediationsInCooldown.WithLabelValues(parts[0], parts[1]).Set(float64(count))
 		}
 	}
 
@@ -881,6 +892,8 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 
 	// Process hits and perform remediation
 	for _, hitObj := range hitsArray {
+		logsProcessed++ // Count each log entry processed
+
 		hitMap, ok := hitObj.(map[string]interface{})
 		if !ok {
 			continue
@@ -953,6 +966,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		// Extract pod info (name and namespace)
 		podName := ""
 		namespace := ""
+		var appLabel string
 
 		// Try standard kubernetes format
 		k8sRaw, hasK8s := source["kubernetes"]
@@ -990,6 +1004,12 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 					if val, has := labels["namespace"]; has && namespace == "" {
 						if str, ok := val.(string); ok {
 							namespace = str
+						}
+					}
+					// Extract app label for metrics
+					if val, has := labels["app"]; has {
+						if str, ok := val.(string); ok {
+							appLabel = str
 						}
 					}
 				}
@@ -1036,6 +1056,11 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			namespace = lr.Namespace
 		}
 
+		// Default app label if not found
+		if appLabel == "" {
+			appLabel = "unknown"
+		}
+
 		// Last resort - extract pod from log message
 		if podName == "" {
 			podPattern := regexp.MustCompile(`pod[=:]\s*([a-zA-Z0-9-]+)`)
@@ -1053,9 +1078,10 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 
 				for _, pod := range podList.Items {
 					if pod.Namespace == namespace {
-						for _, appLabel := range appLabels {
-							if pod.Labels["app"] == appLabel {
+						for _, label := range appLabels {
+							if pod.Labels["app"] == label {
 								podName = pod.Name
+								appLabel = label
 								break
 							}
 						}
@@ -1083,6 +1109,9 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			if !matched {
 				continue
 			}
+
+			// Increment error pattern occurrence metric
+			metrics.ErrorPatternOccurrences.WithLabelValues(rule.ErrorPattern, namespace, appLabel).Inc()
 
 			logger.Info("Error pattern matched",
 				"pattern", rule.ErrorPattern,
@@ -1158,12 +1187,22 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				logger.Error(remediationErr, "Failed to execute remediation action",
 					"action", rule.Action,
 					"pod", podName)
+				metrics.RemediationFailureTotal.WithLabelValues(rule.Action, namespace, remediationErr.Error()).Inc()
 				continue
 			}
 
-			// Action succeeded - update cooldown
+			// Action succeeded
+			metrics.RemediationSuccessTotal.WithLabelValues(rule.Action, namespace).Inc()
+
+			// Update cooldown
 			cooldownExpiry := time.Now().Add(time.Duration(rule.CooldownPeriod) * time.Second)
 			cooldownMap[cooldownKey] = cooldownExpiry
+
+			// Update cooldown metrics
+			actionKey := fmt.Sprintf("%s:%s", rule.Action, namespace)
+			cooldownCount[actionKey]++
+			metrics.RemediationsInCooldown.WithLabelValues(rule.Action, namespace).Set(float64(cooldownCount[actionKey]))
+
 			actionsPerformed++
 
 			// Refetch LogRemediation to get latest status
@@ -1193,7 +1232,11 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		}
 	}
 
-	logger.Info("Completed log remediation check", "actions_performed", actionsPerformed)
+	// Record log processing metrics
+	metrics.LogsProcessedTotal.Add(float64(logsProcessed))
+	metrics.LogProcessingDuration.WithLabelValues(lr.Namespace).Observe(time.Since(startTime).Seconds())
+
+	logger.Info("Completed log remediation check", "actions_performed", actionsPerformed, "logs_processed", logsProcessed)
 	return nil
 }
 
@@ -1429,6 +1472,18 @@ func (r *LogRemediationReconciler) scaleDeployment(ctx context.Context, namespac
 		return err
 	}
 
+	// Get current replicas for scaling direction
+	var currentReplicas int32 = 1
+	if deployment.Spec.Replicas != nil {
+		currentReplicas = *deployment.Spec.Replicas
+	}
+
+	// Determine scaling direction
+	direction := "up"
+	if replicas < currentReplicas {
+		direction = "down"
+	}
+
 	// Update replicas
 	deployment.Spec.Replicas = &replicas
 
@@ -1438,6 +1493,10 @@ func (r *LogRemediationReconciler) scaleDeployment(ctx context.Context, namespac
 	}
 
 	logger.Info("Deployment scaled successfully", "name", name, "replicas", replicas)
+
+	// Track scaling operation in metrics
+	metrics.ResourceScalingOperations.WithLabelValues("Deployment", name, namespace, direction).Inc()
+	metrics.ResourceCurrentReplicas.WithLabelValues("Deployment", name, namespace).Set(float64(replicas))
 
 	// Record the action
 	return r.recordRemediationAction(ctx, lr, podName, errorPattern, fmt.Sprintf("scale:%d", replicas))
@@ -1455,6 +1514,18 @@ func (r *LogRemediationReconciler) scaleStatefulSet(ctx context.Context, namespa
 		return err
 	}
 
+	// Get current replicas for scaling direction
+	var currentReplicas int32 = 1
+	if statefulSet.Spec.Replicas != nil {
+		currentReplicas = *statefulSet.Spec.Replicas
+	}
+
+	// Determine scaling direction
+	direction := "up"
+	if replicas < currentReplicas {
+		direction = "down"
+	}
+
 	// Update replicas
 	statefulSet.Spec.Replicas = &replicas
 
@@ -1464,6 +1535,10 @@ func (r *LogRemediationReconciler) scaleStatefulSet(ctx context.Context, namespa
 	}
 
 	logger.Info("StatefulSet scaled successfully", "name", name, "replicas", replicas)
+
+	// Track scaling operation in metrics
+	metrics.ResourceScalingOperations.WithLabelValues("StatefulSet", name, namespace, direction).Inc()
+	metrics.ResourceCurrentReplicas.WithLabelValues("StatefulSet", name, namespace).Set(float64(replicas))
 
 	// Record the action
 	return r.recordRemediationAction(ctx, lr, podName, errorPattern, fmt.Sprintf("scale:%d", replicas))
