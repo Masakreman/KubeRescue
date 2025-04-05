@@ -5,6 +5,9 @@ metadata:
   namespace: monitoring
 spec:
   replicas: 1
-  configSecret: alertmanager-kuberescue
+  configSecret: alertmanager-kuberescue  # This should point to your secret
   secrets:
     - pagerduty-secrets
+  configMaps: []  # If you have any configMaps to include
+  alertmanagerConfigSelector: {}  # This is important - make it empty to disable default config
+  alertmanagerConfigNamespaceSelector: {}  # This is important - make it empty to disable default config
