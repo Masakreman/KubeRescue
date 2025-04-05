@@ -213,9 +213,10 @@ apply-alerts:
 	kubectl apply -f config/prometheus/alerts/kuberescue-alerts.yaml
 
 .PHONY: apply-log-config
-apply-alerts:
+apply-log-config:
 	kubectl apply -f config/elasticsearch/elasticsearch-deployment.yaml
 	kubectl apply -f config/elasticsearch/elasticsearch-cleanup.yaml
+	kubectl apply -f config/fluentbit/fluentbit_serviceaccount.yaml
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
