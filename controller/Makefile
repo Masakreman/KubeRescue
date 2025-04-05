@@ -210,7 +210,7 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 
 .PHONY: apply-alerts
 apply-alerts:
-	kubectl apply -f config/prometheus/alerts/kuberescue-alerts.yaml
+	kubectl apply -f config/prometheus/alerts/kuberescue-alerts.yaml -n monitoring
 
 .PHONY: apply-log-config
 apply-log-config:

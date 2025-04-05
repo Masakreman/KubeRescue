@@ -6,6 +6,7 @@ metadata:
   labels:
     prometheus: monitoring
     role: alert-rules
+    release: prometheus
 spec:
   groups:
   - name: KubeRescue.Errors
