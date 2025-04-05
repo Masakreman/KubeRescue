@@ -16,6 +16,7 @@ spec:
       for: 3m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "High error rate for {{ $labels.application }}"
         description: "Application {{ $labels.application }} has a high error rate ({{ $value }} errors/sec)"
@@ -26,6 +27,7 @@ spec:
       for: 2m
       labels:
         severity: critical
+        application: "{{ $labels.application }}"
       annotations:
         summary: "Critical errors detected in {{ $labels.application }}"
         description: "{{ $labels.pattern }} errors detected in {{ $labels.application }} ({{ $value }} occurrences in 5m)"
@@ -38,6 +40,7 @@ spec:
       for: 5m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "High number of remediations in {{ $labels.namespace }}"
         description: "{{ $value }} remediation actions performed in the last 10 minutes in namespace {{ $labels.namespace }}"
@@ -48,6 +51,7 @@ spec:
       for: 5m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "Multiple remediation failures for {{ $labels.action }} in {{ $labels.namespace }}"
         description: "{{ $value }} failed {{ $labels.action }} remediation attempts in {{ $labels.namespace }} in the last 15 minutes"
@@ -58,6 +62,7 @@ spec:
       for: 15m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "Low success rate for {{ $labels.action }} remediations"
         description: "Remediation action {{ $labels.action }} has a success rate below 70% in the last 15 minutes"
@@ -70,6 +75,7 @@ spec:
       for: 10m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "Frequent scaling for {{ $labels.resource_name }}"
         description: "Resource {{ $labels.resource_name }} has been scaled {{ $value }} times in the last 15 minutes"
@@ -80,6 +86,7 @@ spec:
       for: 10m
       labels:
         severity: critical
+        application: "{{ $labels.application }}"
       annotations:
         summary: "Repeated pod restarts in {{ $labels.namespace }}"
         description: "{{ $value }} pod restarts have occurred in namespace {{ $labels.namespace }} in the last 15 minutes"
@@ -92,6 +99,7 @@ spec:
       for: 5m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "Log processing errors"
         description: "KubeRescue controller is encountering errors processing logs ({{ $value }} errors in 5m)"
@@ -102,6 +110,7 @@ spec:
       for: 5m
       labels:
         severity: warning
+        application: "{{ $labels.application }}"
       annotations:
         summary: "High log processing latency"
         description: "KubeRescue controller has high log processing latency (p95: {{ $value }}s)"
