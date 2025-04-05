@@ -1,0 +1,108 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kuberescue-alerts
+  namespace: monitoring
+  labels:
+    prometheus: monitoring
+    role: alert-rules
+    release: prometheus
+spec:
+  groups:
+  - name: KubeRescue.Errors
+    rules:
+    - alert: HighErrorRate
+      expr: sum(rate(kuberescue_error_pattern_occurrences_total[5m])) by (application) > 0.3
+      for: 3m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate for {{ $labels.application }}"
+        description: "Application {{ $labels.application }} has a high error rate ({{ $value }} errors/sec)"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-errors/kuberescue-error-pattern-analysis"
+
+    - alert: CriticalErrorsDetected
+      expr: sum(increase(kuberescue_error_pattern_occurrences_total{pattern=~"CRITICAL.*"}[5m])) by (application, pattern) > 5
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Critical errors detected in {{ $labels.application }}"
+        description: "{{ $labels.pattern }} errors detected in {{ $labels.application }} ({{ $value }} occurrences in 5m)"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-errors/kuberescue-error-pattern-analysis"
+
+  - name: KubeRescue.Remediations
+    rules:
+    - alert: HighRemediationRate
+      expr: sum(increase(kuberescue_remediations_total[10m])) by (namespace) > 10
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High number of remediations in {{ $labels.namespace }}"
+        description: "{{ $value }} remediation actions performed in the last 10 minutes in namespace {{ $labels.namespace }}"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-overview/kuberescue-overview"
+
+    - alert: RemediationFailures
+      expr: sum(increase(kuberescue_remediation_failure_total[15m])) by (action, namespace) > 3
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Multiple remediation failures for {{ $labels.action }} in {{ $labels.namespace }}"
+        description: "{{ $value }} failed {{ $labels.action }} remediation attempts in {{ $labels.namespace }} in the last 15 minutes"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-overview/kuberescue-overview"
+
+    - alert: LowRemediationSuccessRate
+      expr: sum(kuberescue_remediation_success_total) by (action) / (sum(kuberescue_remediation_success_total) by (action) + sum(kuberescue_remediation_failure_total) by (action)) < 0.7
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Low success rate for {{ $labels.action }} remediations"
+        description: "Remediation action {{ $labels.action }} has a success rate below 70% in the last 15 minutes"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-errors/kuberescue-error-pattern-analysis"
+
+  - name: KubeRescue.ScalingOperations
+    rules:
+    - alert: FrequentScaling
+      expr: sum(increase(kuberescue_scaling_operations_total[15m])) by (resource_name) > 5
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Frequent scaling for {{ $labels.resource_name }}"
+        description: "Resource {{ $labels.resource_name }} has been scaled {{ $value }} times in the last 15 minutes"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-apps/kuberescue-application-performance"
+
+    - alert: RepeatedRestarts
+      expr: sum(increase(kuberescue_remediations_total{action="restart"}[15m])) by (namespace) > 8
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Repeated pod restarts in {{ $labels.namespace }}"
+        description: "{{ $value }} pod restarts have occurred in namespace {{ $labels.namespace }} in the last 15 minutes"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-apps/kuberescue-application-performance"
+
+  - name: KubeRescue.Controller
+    rules:
+    - alert: LogProcessingErrors
+      expr: increase(kuberescue_log_processing_errors_total[5m]) > 10
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Log processing errors"
+        description: "KubeRescue controller is encountering errors processing logs ({{ $value }} errors in 5m)"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-overview/kuberescue-overview"
+
+    - alert: HighProcessingLatency
+      expr: histogram_quantile(0.95, sum(rate(kuberescue_log_processing_duration_seconds_bucket[5m])) by (le)) > 3
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High log processing latency"
+        description: "KubeRescue controller has high log processing latency (p95: {{ $value }}s)"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-overview/kuberescue-overview"
