@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: masakreman/kuberescue-controller
-  newTag: v5.1.2
+  newTag: v5.1.3
