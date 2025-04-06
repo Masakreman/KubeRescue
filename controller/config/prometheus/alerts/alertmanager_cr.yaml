@@ -3,11 +3,10 @@ kind: Alertmanager
 metadata:
   name: main
   namespace: monitoring
+  labels:
+    alertmanager: main
 spec:
   replicas: 1
-  configSecret: alertmanager-kuberescue  # This should point to your secret
-  secrets:
-    - pagerduty-secrets
-  configMaps: []  # If you have any configMaps to include
-  alertmanagerConfigSelector: {}  # This is important - make it empty to disable default config
-  alertmanagerConfigNamespaceSelector: {}  # This is important - make it empty to disable default config
+  configSecret: alertmanager-config
+  serviceAccountName: prometheus-k8s
+  portName: web

@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: test-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: test.rules
+    rules:
+    - alert: TestAlert
+      expr: vector(1)
+      for: 30s
+      labels:
+        severity: critical
+      annotations:
+        summary: "Test alert"
+        description: "This is a test alert to verify PagerDuty integration"

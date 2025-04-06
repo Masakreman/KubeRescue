@@ -1,0 +1,56 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kuberescue-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: kuberescue.general
+    rules:
+    - alert: HighErrorRate
+      expr: sum(rate(kuberescue_error_pattern_occurrences_total[5m])) by (application) > 0.3
+      for: 3m
+      labels:
+        severity: critical
+        application: "{{ $labels.application }}"
+      annotations:
+        summary: "High error rate for {{ $labels.application }}"
+        description: "Application {{ $labels.application }} has a high error rate ({{ $value }} errors/sec)"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-errors/kuberescue-error-pattern-analysis"
+
+    - alert: CriticalErrorsDetected
+      expr: sum(increase(kuberescue_error_pattern_occurrences_total{pattern=~"CRITICAL.*"}[5m])) by (application, pattern) > 5
+      for: 2m
+      labels:
+        severity: critical
+        application: "{{ $labels.application }}"
+      annotations:
+        summary: "Critical errors detected in {{ $labels.application }}"
+        description: "{{ $labels.pattern }} errors detected in {{ $labels.application }} ({{ $value }} occurrences in 5m)"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-errors/kuberescue-error-pattern-analysis"
+  
+  - name: kuberescue.remediations
+    rules:
+    - alert: HighRemediationRate
+      expr: sum(increase(kuberescue_remediations_total[10m])) by (namespace) > 10
+      for: 5m
+      labels:
+        severity: warning
+        application: "kuberescue"
+      annotations:
+        summary: "High number of remediations in {{ $labels.namespace }}"
+        description: "{{ $value }} remediation actions performed in the last 10 minutes in namespace {{ $labels.namespace }}"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-overview/kuberescue-overview"
+
+    - alert: RemediationFailures
+      expr: sum(increase(kuberescue_remediation_failure_total[15m])) by (action, namespace) > 3
+      for: 5m
+      labels:
+        severity: warning
+        application: "kuberescue"
+      annotations:
+        summary: "Multiple remediation failures for {{ $labels.action }} in {{ $labels.namespace }}"
+        description: "{{ $value }} failed {{ $labels.action }} remediation attempts in {{ $labels.namespace }} in the last 15 minutes"
+        dashboard_url: "https://grafana.example.com/d/kuberescue-overview/kuberescue-overview"

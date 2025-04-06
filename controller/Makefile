@@ -210,10 +210,11 @@ $(GOLANGCI_LINT): $(LOCALBIN)
 
 .PHONY: apply-alerts
 apply-alerts:
-	kubectl apply -f config/prometheus/alerts/kuberescue-alerts.yaml -n monitoring
-	kubectl apply -f config/prometheus/alerts/alertmanager_cr.yaml
-	kubectl apply -f config/prometheus/alerts/pagerduty_alertmanager.yaml
-	kubectl apply -f config/prometheus/alerts/pagerduty_secrets.yaml 
+	@kubectl apply -f config/prometheus/alerts/alertmanager_config.yaml
+	@kubectl apply -f config/prometheus/alerts/test-alert.yaml
+	@kubectl apply -f config/prometheus/alerts/kuberescue_alerts.yaml
+	@kubectl patch alertmanager prometheus-kube-prometheus-alertmanager -n monitoring --type=merge -p '{"spec":{"configSecret":"alertmanager-prometheus-kube-prometheus-alertmanager"}}'
+
 
 .PHONY: apply-log-config
 apply-log-config:
