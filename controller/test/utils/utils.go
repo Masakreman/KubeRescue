@@ -36,12 +36,11 @@ const (
 	certmanagerURLTmpl = "https://github.com/jetstack/cert-manager/releases/download/%s/cert-manager.yaml"
 )
 
-func warnError(err error) {
-	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
-}
+// Define RunFunc type for mocking in tests
+type RunFunc func(cmd *exec.Cmd) (string, error)
 
-// Run executes the provided command within this context
-func Run(cmd *exec.Cmd) (string, error) {
+// Default implementation of RunFunc
+var defaultRun RunFunc = func(cmd *exec.Cmd) (string, error) {
 	dir, _ := GetProjectDir()
 	cmd.Dir = dir
 
@@ -58,6 +57,14 @@ func Run(cmd *exec.Cmd) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// Run executes the provided command within this context
+// This can be mocked in tests by assigning a different function to Run
+var Run RunFunc = defaultRun
+
+func warnError(err error) {
+	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
 }
 
 // InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
