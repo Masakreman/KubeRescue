@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test5-intermittent-failure-app
+  labels:
+    app: test5-intermittent-failure-app
+    test: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test5-intermittent-failure-app
+  template:
+    metadata:
+      labels:
+        app: test5-intermittent-failure-app
+    spec:
+      containers:
+      - name: intermittent-failure-simulator
+        image: python:3.9-slim
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          cat > /app.py << 'EOF'
+          import time
+          import random
+          import logging
+
+          logging.basicConfig(level=logging.INFO)
+          logger = logging.getLogger()
+
+          # Simulate an application with unpredictable failures
+          while True:
+              # Normal operation most of the time
+              if random.random() < 0.8:  # 80% of the time works normally
+                  logger.info("Application processing request normally")
+              else:
+                  # Different types of failures with different probabilities
+                  failure_type = random.random()
+                  if failure_type < 0.3:
+                      logger.error("INTERMITTENT_TIMEOUT Request timed out unexpectedly")
+                  elif failure_type < 0.6:
+                      logger.error("INTERMITTENT_CONNECTION_DROP Connection dropped mid-request")
+                  else:
+                      logger.error("CRITICAL_INTERMITTENT_FAILURE System encountered an unexpected state")
+              
+              # Variable sleep time to make the pattern even more unpredictable
+              time.sleep(random.uniform(3, 15))
+          EOF
+          
+          python /app.py
