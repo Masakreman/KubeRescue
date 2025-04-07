@@ -4,7 +4,8 @@ metadata:
   name: kuberescue-alerts
   namespace: monitoring
   labels:
-    prometheus: kube-prometheus  
+    prometheus: kube-prometheus 
+    release: prometheus 
 spec:
   groups:
   - name: kuberescue.alerts
