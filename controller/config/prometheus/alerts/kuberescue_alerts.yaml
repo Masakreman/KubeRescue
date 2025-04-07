@@ -5,6 +5,7 @@ metadata:
   namespace: monitoring
   labels:
     prometheus: kube-prometheus
+    release: prometheus
 spec:
   groups:
   - name: kuberescue.general
