@@ -39,8 +39,7 @@ spec:
 
           # Simulate an application with unpredictable failures
           while True:
-              # Normal operation most of the time
-              if random.random() < 0.8:  # 80% of the time works normally
+              if random.random() < 0.8:  # 80% of the time works normal
                   logger.info("Application processing request normally")
               else:
                   # Different types of failures with different probabilities
@@ -52,7 +51,7 @@ spec:
                   else:
                       logger.error("CRITICAL_INTERMITTENT_FAILURE System encountered an unexpected state")
               
-              # Variable sleep time to make the pattern even more unpredictable
+              # Variable sleep time to make the patternmore unpredictable
               time.sleep(random.uniform(3, 15))
           EOF
           
