@@ -216,11 +216,25 @@ apply-alerts:
 	@kubectl patch alertmanager prometheus-kube-prometheus-alertmanager -n monitoring --type=merge -p '{"spec":{"configSecret":"alertmanager-prometheus-kube-prometheus-alertmanager"}}'
 
 
-.PHONY: apply-log-config
-apply-log-config:
+.PHONY: apply-config
+apply-config:
 	kubectl apply -f config/elasticsearch/elasticsearch-deployment.yaml
 	kubectl apply -f config/elasticsearch/elasticsearch-cleanup.yaml
 	kubectl apply -f config/fluentbit/fluentbit_serviceaccount.yaml
+	@kubectl apply -f config/prometheus/alerts/alertmanager_config.yaml
+	@kubectl apply -f config/prometheus/alerts/test-alert.yaml
+	@kubectl apply -f config/prometheus/alerts/kuberescue_alerts.yaml
+	@kubectl patch alertmanager prometheus-kube-prometheus-alertmanager -n monitoring --type=merge -p '{"spec":{"configSecret":"alertmanager-prometheus-kube-prometheus-alertmanager"}}'
+	kubectl apply -f ./internal/controller/testApps/test1-db-error-app.yaml 
+	kubectl apply -f ./internal/controller/testApps/test2-memory-leak-app.yaml 
+	kubectl apply -f ./internal/controller/testApps/test3-service-cascade-app.yaml 
+	kubectl apply -f ./internal/controller/testApps/test4-traffic-spike-app.yaml 
+	kubectl apply -f ./internal/controller/testApps/test5-intermittent-failure-app.yaml
+	kubectl apply -f ./internal/controller/testCRs/test1-db-error-remediation.yaml 
+	kubectl apply -f ./internal/controller/testCRs/test2-memory-leak-remediation.yaml 
+	kubectl apply -f ./internal/controller/testCRs/test3-service-cascade-remediation.yaml 
+	kubectl apply -f ./internal/controller/testCRs/test4-traffic-spike-remediation.yaml 
+	kubectl apply -f ./internal/controller/testCRs/test5-intermittent-failure-remediation.yaml 
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
