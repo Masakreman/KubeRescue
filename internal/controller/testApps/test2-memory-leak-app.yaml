@@ -32,18 +32,15 @@ spec:
           import random
           import socket
 
-          # Memory leak simulation
           memory_leak = []
           hostname = socket.gethostname()
 
-          # Main loop
           while True:
               print("INFO Application running normally", flush=True)
               time.sleep(5)
               
               # Simulate memory leak with increasing probability
               if random.random() < 0.3:
-                  # Add memory
                   leak_size = random.randint(1000, 5000)
                   memory_leak.append("x" * 1000 * leak_size)
                   current_memory = sum(len(x) for x in memory_leak) / (1024 * 1024)
@@ -56,7 +53,6 @@ spec:
                   
                   if current_memory > 100:
                       print("CRITICAL_MEMORY_EXCEEDED Memory threshold at {:.2f} MB".format(current_memory), flush=True)
-                      # Reset some memory to avoid OOMKill but maintain leak pattern
                       memory_leak = memory_leak[-len(memory_leak)//3:]
           EOF
           

@@ -22,7 +22,7 @@ import (
 func TestMainSetup(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 
-	// Simulate main() startup scenarios
+	//simulate startup scenarios
 	testCases := []struct {
 		name          string
 		args          []string
@@ -33,7 +33,7 @@ func TestMainSetup(t *testing.T) {
 			name:          "Development Mode",
 			args:          []string{"cmd", "--zap-devel=true"},
 			expectedDevel: true,
-			expectedLevel: 0, // Default log level
+			expectedLevel: 0,
 		},
 		{
 			name:          "Production Mode",
@@ -45,17 +45,15 @@ func TestMainSetup(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Create a new flag set for each test to avoid flag redefinition
 			fs := flag.NewFlagSet("test", flag.ContinueOnError)
 
 			opts := zap.Options{
 				Development: tc.expectedDevel,
 			}
 
-			// Bind flags to the new flag set
 			opts.BindFlags(fs)
 
-			// Parse the flags for this test case
+			//parse flags
 			err := fs.Parse(tc.args[1:])
 			g.Expect(err).To(gomega.Succeed())
 
@@ -68,15 +66,13 @@ func TestMainSetup(t *testing.T) {
 	}
 }
 
-// ... rest of the test file remains the same
-
 func TestSchemeInitialization(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 
-	// Test complete scheme initialization
+	// Test complete scheme init
 	scheme := runtime.NewScheme()
 
-	// Add base Kubernetes client scheme
+	//add base Kubernetes client scheme
 	err := clientgoscheme.AddToScheme(scheme)
 	g.Expect(err).To(gomega.Succeed())
 
@@ -84,7 +80,7 @@ func TestSchemeInitialization(t *testing.T) {
 	err = remediationv1alpha1.AddToScheme(scheme)
 	g.Expect(err).To(gomega.Succeed())
 
-	// Verify CRD registration
+	//verify CRD registration
 	gvk := remediationv1alpha1.GroupVersion.WithKind("LogRemediation")
 	obj, err := scheme.New(gvk)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -98,7 +94,7 @@ func TestSchemeInitialization(t *testing.T) {
 func TestManagerOptions(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 
-	// Test different manager configuration scenarios
+	// Test manager config scenarios
 	testCases := []struct {
 		name                  string
 		leaderElection        bool
@@ -235,7 +231,7 @@ func TestMetricsServerConfiguration(t *testing.T) {
 func TestHealthProbes(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 
-	// Simulate health probe configuration
+	//simulate health probe cfg
 	testCases := []struct {
 		name       string
 		probeAddr  string
@@ -253,7 +249,6 @@ func TestHealthProbes(t *testing.T) {
 		},
 	}
 
-	// Mock GetConfigOrDie to avoid actual Kubernetes config
 	originalGetConfigOrDie := ctrl.GetConfigOrDie
 	defer func() { ctrl.GetConfigOrDie = originalGetConfigOrDie }()
 

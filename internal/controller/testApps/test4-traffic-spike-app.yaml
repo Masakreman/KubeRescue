@@ -56,37 +56,30 @@ spec:
               time.sleep(10)
               
               # Phase 2: Scale trigger - high traffic error (limited occurrences)
-              for i in range(3):  # Only trigger 3 scale-ups instead of unlimited
+              for i in range(3):
                   log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU {80 + i*5}%")
-                  time.sleep(30)  # Longer pause between scale-ups to allow system to adjust
+                  time.sleep(30)
               
               # Phase 3: Restart trigger - only if still under high load
-              # 50% chance to enter critical state, otherwise go directly to recovery
               if random.random() < 0.5:
                   log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU 95%")
-                  time.sleep(60)  # Longer pause to ensure restart completes
+                  time.sleep(60)
               
               # Phase 4: Recovery trigger - ensure we send multiple recovery messages
-              # Add a significant quiet period before starting recovery
-              # This ensures all scale-up actions are completed before starting recovery
-              time.sleep(90)  # 1.5 minute quiet period with no logs at all
+              time.sleep(90)
               log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 65%")
-              time.sleep(60)  # Longer time between messages to ensure they're processed
+              time.sleep(60)  
               
-              # Additional recovery log for continued scale-down
               log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 45%")
               time.sleep(60)
               
-              # Final recovery to minimum
               log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 30%")
               time.sleep(30)
               
-              # Stable state - ensure long enough period of stability before next spike
               for i in range(5):
                   log_standard_error("info", f"Service stable on {hostname}, CPU 25%")
                   time.sleep(10)
           
-          # Main loop - longer interval between spikes to allow full recovery
           while True:
               logger.info(f"Normal traffic on {hostname}, CPU 30%")
               time.sleep(15)
@@ -94,8 +87,7 @@ spec:
               # Simulate a traffic spike
               simulate_traffic_spike()
               
-              # Quiet period between cycles - longer than before
-              quiet_period = 300  # 5 minutes
+              quiet_period = 300 
               for i in range(quiet_period // 15):
                   logger.info(f"Normal traffic on {hostname}, CPU 30% - quiet period")
                   time.sleep(15)

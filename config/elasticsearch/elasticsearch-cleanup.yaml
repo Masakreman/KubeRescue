@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: delete-old-logs
 spec:
-  schedule: "0 * * * *"  # Runs every hour
+  schedule: "0 * * * *"  # exec every hour
   jobTemplate:
     spec:
       template:

@@ -10,7 +10,7 @@ import (
 func TestLogRemediationValidation(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 
-	// Test creating a valid LogRemediation
+	// test creating valid LogRemediation
 	validLogRemediation := &LogRemediation{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-remediation",
@@ -40,12 +40,12 @@ func TestLogRemediationValidation(t *testing.T) {
 		},
 	}
 
-	// Verify required fields are present
+	// verify required fields are input
 	g.Expect(validLogRemediation.Spec.Sources).NotTo(gomega.BeEmpty())
 	g.Expect(validLogRemediation.Spec.ElasticsearchConfig.Host).NotTo(gomega.BeEmpty())
 	g.Expect(validLogRemediation.Spec.ElasticsearchConfig.Index).NotTo(gomega.BeEmpty())
 
-	// Test with FluentbitConfig
+	// test fluentbitconfig
 	validLogRemediation.Spec.FluentbitConfig = &FluentbitConfig{
 		BufferSize:    "10MB",
 		FlushInterval: 5,
@@ -67,7 +67,7 @@ func TestRemediationHistoryEntry(t *testing.T) {
 		Action:    "restart",
 	}
 
-	// Validate fields
+	// validate
 	g.Expect(entry.PodName).To(gomega.Equal("test-pod"))
 	g.Expect(entry.Pattern).To(gomega.Equal("ERROR.*"))
 	g.Expect(entry.Action).To(gomega.Equal("restart"))
@@ -110,7 +110,7 @@ func TestLogRemediationDeepCopy(t *testing.T) {
 		},
 	}
 
-	// Test DeepCopy
+	// Test deepcopy
 	copy := original.DeepCopy()
 	g.Expect(copy.Name).To(gomega.Equal(original.Name))
 	g.Expect(copy.Namespace).To(gomega.Equal(original.Namespace))
@@ -118,13 +118,13 @@ func TestLogRemediationDeepCopy(t *testing.T) {
 	g.Expect(copy.Status.FluentbitPods).To(gomega.Equal(original.Status.FluentbitPods))
 	g.Expect(copy.Status.RemediationHistory[0].PodName).To(gomega.Equal(original.Status.RemediationHistory[0].PodName))
 
-	// Test DeepCopyObject
+	// test object
 	copyObj := original.DeepCopyObject()
 	copyLogRemediation, ok := copyObj.(*LogRemediation)
 	g.Expect(ok).To(gomega.BeTrue())
 	g.Expect(copyLogRemediation.Name).To(gomega.Equal(original.Name))
 
-	// Test DeepCopyInto
+	// test deepcopyinto
 	target := &LogRemediation{}
 	original.DeepCopyInto(target)
 	g.Expect(target.Name).To(gomega.Equal(original.Name))
@@ -156,12 +156,12 @@ func TestLogRemediationListDeepCopy(t *testing.T) {
 		Items: []LogRemediation{item},
 	}
 
-	// Test DeepCopy
+	// Test deepcopy
 	copy := original.DeepCopy()
 	g.Expect(copy.Items).To(gomega.HaveLen(1))
 	g.Expect(copy.Items[0].Name).To(gomega.Equal(original.Items[0].Name))
 
-	// Test DeepCopyObject
+	// Test object
 	copyObj := original.DeepCopyObject()
 	copyList, ok := copyObj.(*LogRemediationList)
 	g.Expect(ok).To(gomega.BeTrue())
@@ -181,18 +181,18 @@ func TestLogSourceDeepCopy(t *testing.T) {
 		Path:      "/var/log/path",
 	}
 
-	// Test DeepCopy
+	// Test deepcopy
 	copy := original.DeepCopy()
 	g.Expect(copy.Type).To(gomega.Equal(original.Type))
 	g.Expect(copy.Selector).To(gomega.Equal(original.Selector))
 	g.Expect(copy.Container).To(gomega.Equal(original.Container))
 	g.Expect(copy.Path).To(gomega.Equal(original.Path))
 
-	// Modify the copy and verify it doesn't affect the original
+	// Modify the copy and verify it wont affect original
 	copy.Selector["new-key"] = "new-value"
 	g.Expect(original.Selector).NotTo(gomega.HaveKey("new-key"))
 
-	// Test DeepCopyInto
+	// Test deepcopyinto
 	target := LogSource{}
 	original.DeepCopyInto(&target)
 	g.Expect(target.Type).To(gomega.Equal(original.Type))

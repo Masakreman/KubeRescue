@@ -26,4 +26,4 @@ spec:
       cooldownPeriod: 300
     - errorPattern: "Application processing request normally"
       action: recovery
-      cooldownPeriod: 600  # 10 minutes before attempting recovery  
+      cooldownPeriod: 600

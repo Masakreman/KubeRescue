@@ -5,9 +5,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-// Metrics for the KubeRescue controller
+// controller metrics
 var (
-	// RemediationsTotal tracks the total number of remediation actions performed
+	// tracks the total number of remediation actions
 	RemediationsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "kuberescue_remediations_total",
@@ -16,7 +16,7 @@ var (
 		[]string{"action", "error_pattern", "namespace"},
 	)
 
-	// RemediationLatency tracks the time taken to perform remediation actions
+	// track time taken to perform remediations
 	RemediationLatency = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "kuberescue_remediation_latency_seconds",
@@ -26,7 +26,7 @@ var (
 		[]string{"action", "namespace"},
 	)
 
-	// LogProcessingErrors tracks errors encountered during log processing
+	// track errors during log processing
 	LogProcessingErrors = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "kuberescue_log_processing_errors_total",
@@ -34,7 +34,7 @@ var (
 		},
 	)
 
-	// ActiveRemediations tracks the number of active remediations
+	// track number of active remediations
 	ActiveRemediations = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kuberescue_active_remediations",
@@ -43,9 +43,7 @@ var (
 		[]string{"namespace"},
 	)
 
-	// Enhanced metrics for better visualization
-
-	// ErrorPatternOccurrences tracks the frequency of specific error patterns
+	// frequency of error patterns
 	ErrorPatternOccurrences = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "kuberescue_error_pattern_occurrences_total",
@@ -54,7 +52,7 @@ var (
 		[]string{"pattern", "namespace", "application"},
 	)
 
-	// ResourceScalingOperations tracks scaling operations performed
+	// track scaling operations done
 	ResourceScalingOperations = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "kuberescue_scaling_operations_total",
@@ -63,7 +61,7 @@ var (
 		[]string{"resource_type", "resource_name", "namespace", "direction"},
 	)
 
-	// ResourceCurrentReplicas tracks current replica counts for resources
+	// track current replica counts for resources
 	ResourceCurrentReplicas = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kuberescue_resource_current_replicas",
@@ -72,7 +70,7 @@ var (
 		[]string{"resource_type", "resource_name", "namespace"},
 	)
 
-	// LogsProcessedTotal tracks the total number of logs processed
+	// trackk total logs processed
 	LogsProcessedTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "kuberescue_logs_processed_total",
@@ -80,17 +78,17 @@ var (
 		},
 	)
 
-	// LogProcessingDuration tracks time taken to process log batches
+	// track time taken to process log chunks
 	LogProcessingDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "kuberescue_log_processing_duration_seconds",
-			Help:    "Time taken to process log batches",
-			Buckets: prometheus.ExponentialBuckets(0.01, 2, 10), // 0.01s to ~10s
+			Help:    "Time taken to process log chunks",
+			Buckets: prometheus.ExponentialBuckets(0.01, 2, 10),
 		},
 		[]string{"namespace"},
 	)
 
-	// RemediationSuccessTotal tracks successful remediation actions
+	// track successful remediations
 	RemediationSuccessTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "kuberescue_remediation_success_total",
@@ -99,7 +97,7 @@ var (
 		[]string{"action", "namespace"},
 	)
 
-	// RemediationFailureTotal tracks failed remediation actions
+	// track failed remediation actions
 	RemediationFailureTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "kuberescue_remediation_failure_total",
@@ -108,7 +106,7 @@ var (
 		[]string{"action", "namespace", "reason"},
 	)
 
-	// RemediationsInCooldown tracks number of remediation actions in cooldown
+	/// track num of remediation actions in cooldown
 	RemediationsInCooldown = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "kuberescue_remediations_in_cooldown",
@@ -119,7 +117,7 @@ var (
 )
 
 func init() {
-	// Register metrics with the controller-runtime metrics registry
+	// register with controllerruntime
 	metrics.Registry.MustRegister(
 		RemediationsTotal,
 		RemediationLatency,

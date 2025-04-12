@@ -24,13 +24,11 @@ import (
 	remediationv1alpha1 "github.com/Masakreman/KubeRescue/api/v1alpha1"
 )
 
-// Mock HTTP server for Elasticsearch API
 func mockElasticsearchServer() *httptest.Server {
 	handler := http.NewServeMux()
 
-	// Mock the search endpoint
+	//mock qury
 	handler.HandleFunc("/kubernetes-logs/_search", func(w http.ResponseWriter, r *http.Request) {
-		// Provide a response that includes some mock error logs
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{
@@ -79,7 +77,6 @@ func mockElasticsearchServer() *httptest.Server {
 }
 
 var _ = Describe("LogRemediation Controller", func() {
-	// Define utility constants for object names and testing timeouts.
 	const (
 		resourceName      = "test-remediation"
 		resourceNamespace = "default"
@@ -87,7 +84,7 @@ var _ = Describe("LogRemediation Controller", func() {
 		interval          = time.Millisecond * 250
 	)
 
-	Context("When testing the controller reconciliation", func() {
+	Context("for testing reconciliation", func() {
 		var (
 			ctx            context.Context
 			mockServer     *httptest.Server
@@ -102,11 +99,9 @@ var _ = Describe("LogRemediation Controller", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
-
-			// Start mock Elasticsearch server
 			mockServer = mockElasticsearchServer()
 
-			// Create a LogRemediation instance
+			// create custom resource
 			logremediation = &remediationv1alpha1.LogRemediation{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -122,7 +117,6 @@ var _ = Describe("LogRemediation Controller", func() {
 						},
 					},
 					ElasticsearchConfig: remediationv1alpha1.ElasticsearchConfig{
-						// Use proper URL format for the mock server
 						Host:  mockServer.URL,
 						Port:  9200,
 						Index: "kubernetes-logs",
@@ -154,7 +148,7 @@ var _ = Describe("LogRemediation Controller", func() {
 				},
 			}
 
-			// Create a test Pod
+			//test pod/app
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      podName,
@@ -167,7 +161,7 @@ var _ = Describe("LogRemediation Controller", func() {
 							APIVersion: "apps/v1",
 							Kind:       "ReplicaSet",
 							Name:       "test-replicaset",
-							UID:        "12345",
+							UID:        "123",
 							Controller: boolPtr(true),
 						},
 					},
@@ -185,7 +179,7 @@ var _ = Describe("LogRemediation Controller", func() {
 				},
 			}
 
-			// Create a test ReplicaSet
+			//test replicaset
 			replicaSet := &appsv1.ReplicaSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-replicaset",
@@ -209,7 +203,7 @@ var _ = Describe("LogRemediation Controller", func() {
 				},
 			}
 
-			// Create a test Deployment
+			//test deployment
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      deploymentName,
@@ -235,12 +229,12 @@ var _ = Describe("LogRemediation Controller", func() {
 									Image: "test-image",
 									Resources: corev1.ResourceRequirements{
 										Requests: corev1.ResourceList{
-											corev1.ResourceCPU:    resource.MustParse("100m"),
-											corev1.ResourceMemory: resource.MustParse("100Mi"),
+											corev1.ResourceCPU:    resource.MustParse("50m"),
+											corev1.ResourceMemory: resource.MustParse("50Mi"),
 										},
 										Limits: corev1.ResourceList{
-											corev1.ResourceCPU:    resource.MustParse("200m"),
-											corev1.ResourceMemory: resource.MustParse("200Mi"),
+											corev1.ResourceCPU:    resource.MustParse("150m"),
+											corev1.ResourceMemory: resource.MustParse("150Mi"),
 										},
 									},
 								},
@@ -250,15 +244,13 @@ var _ = Describe("LogRemediation Controller", func() {
 				},
 			}
 
-			// Setup k8s objects for fake client
+			// objects for creation
 			k8sObjects = []runtime.Object{
 				logremediation,
 				pod,
 				replicaSet,
 				deployment,
 			}
-
-			// Create a fake client with the test objects
 			scheme := runtime.NewScheme()
 			Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
@@ -270,13 +262,11 @@ var _ = Describe("LogRemediation Controller", func() {
 				WithStatusSubresource(&remediationv1alpha1.LogRemediation{}).
 				Build()
 
-			// Create reconciler with fake client
 			reconciler = &LogRemediationReconciler{
 				Client: fakeClient,
 				Scheme: scheme,
 			}
 
-			// Create reconcile request
 			req = reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      resourceName,
@@ -286,19 +276,15 @@ var _ = Describe("LogRemediation Controller", func() {
 		})
 
 		AfterEach(func() {
-			// Close mock server
 			mockServer.Close()
 		})
 
 		It("should successfully reconcile the LogRemediation resource", func() {
 			By("Reconciling the LogRemediation resource")
-			// Mock Status().Update to work with fake client
-			// This is needed because the fake client's Status().Update doesn't work well with subresources
 
 			result, err := reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(time.Minute * 2)) // Check requeue time matches expected
-
+			Expect(result.RequeueAfter).To(Equal(time.Minute * 2))
 			By("Checking if the ConfigMap was created")
 			configMap := &corev1.ConfigMap{}
 			err = fakeClient.Get(ctx, types.NamespacedName{
@@ -342,13 +328,13 @@ var _ = Describe("LogRemediation Controller", func() {
 			By("Getting the generated Fluentbit config")
 			config := reconciler.generateFluentbitConfig(logremediation)
 
-			By("Checking if the config contains the essential components")
+			By("Checking if the config contains the required components")
 			Expect(config).To(ContainSubstring("[SERVICE]"))
 			Expect(config).To(ContainSubstring("[INPUT]"))
 			Expect(config).To(ContainSubstring("[FILTER]"))
 			Expect(config).To(ContainSubstring("[OUTPUT]"))
 
-			By("Checking if the custom buffer size is applied")
+			By("Checking if the buffer size is applied")
 			logremediation.Spec.FluentbitConfig = &remediationv1alpha1.FluentbitConfig{
 				BufferSize:    "200MB",
 				FlushInterval: 5,
@@ -358,21 +344,17 @@ var _ = Describe("LogRemediation Controller", func() {
 			Expect(config).To(ContainSubstring("Flush        5"))
 		})
 
-		It("should handle finalizer logic", func() {
-			// Create a new LogRemediation with finalizer for testing deletion
+		It("should handle finaliser logic", func() {
 			logRemediationWithFinalizer := &remediationv1alpha1.LogRemediation{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-with-finalizer",
+					Name:       "test-with-finalser",
 					Namespace:  resourceNamespace,
 					Finalizers: []string{"kuberescue.io/finalizer"},
 				},
 				Spec: logremediation.Spec,
 			}
-
-			// Create it
 			Expect(fakeClient.Create(ctx, logRemediationWithFinalizer)).To(Succeed())
 
-			// Create a ConfigMap and DaemonSet that would be managed by this resource
 			configMap := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-with-finalizer-fluentbit-config",
@@ -387,7 +369,7 @@ var _ = Describe("LogRemediation Controller", func() {
 
 			daemonSet := &appsv1.DaemonSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-with-finalizer-fluentbit",
+					Name:      "test-with-finaliser-fluentbit",
 					Namespace: resourceNamespace,
 				},
 				Spec: appsv1.DaemonSetSpec{
@@ -415,29 +397,19 @@ var _ = Describe("LogRemediation Controller", func() {
 			}
 			Expect(fakeClient.Create(ctx, daemonSet)).To(Succeed())
 
-			// Update the resource with a deletion timestamp instead of recreating it
-			// First, get the latest version
 			updatedLogRemediation := &remediationv1alpha1.LogRemediation{}
 			Expect(fakeClient.Get(ctx, types.NamespacedName{
-				Name:      "test-with-finalizer",
+				Name:      "test-with-finaliser",
 				Namespace: resourceNamespace,
 			}, updatedLogRemediation)).To(Succeed())
 
-			// Set the deletion timestamp directly in the struct
 			now := metav1.Now()
 			updatedLogRemediation.ObjectMeta.DeletionTimestamp = &now
-
-			// Update the object in the fake client using a direct update to the underlying objects
-			// This is a workaround because fake client doesn't allow updating immutable fields
-			// We're essentially replacing the object in the store
-
-			// Create a modified client that allows this update
 			scheme := runtime.NewScheme()
 			Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
 			Expect(remediationv1alpha1.AddToScheme(scheme)).To(Succeed())
 
-			// Create a new client with the updated object
 			updatedObjects := []runtime.Object{
 				updatedLogRemediation,
 				configMap,
@@ -450,13 +422,11 @@ var _ = Describe("LogRemediation Controller", func() {
 				WithStatusSubresource(&remediationv1alpha1.LogRemediation{}).
 				Build()
 
-			// Update the reconciler with the new client
 			reconciler.Client = fakeClient
 
-			// Now reconcile
 			req = reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-with-finalizer",
+					Name:      "test-with-finaliser",
 					Namespace: resourceNamespace,
 				},
 			}
@@ -465,22 +435,20 @@ var _ = Describe("LogRemediation Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Requeue).To(BeFalse())
 
-			// Check that the finalizer was removed
 			finalResource := &remediationv1alpha1.LogRemediation{}
 			err = fakeClient.Get(ctx, types.NamespacedName{
-				Name:      "test-with-finalizer",
+				Name:      "test-with-finaliser",
 				Namespace: resourceNamespace,
 			}, finalResource)
 
 			if !errors.IsNotFound(err) {
-				// If the resource still exists, check that the finalizer is gone
 				Expect(finalResource.ObjectMeta.Finalizers).To(BeEmpty())
 			}
 		})
 	})
 })
 
-// Helper functions
+// helper functions
 func boolPtr(b bool) *bool {
 	return &b
 }

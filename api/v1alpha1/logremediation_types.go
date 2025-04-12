@@ -20,100 +20,100 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// LogRemediationSpec defines the desired state of LogRemediation
+// desired state of LogRemediation
 type LogRemediationSpec struct {
-	// Sources defines the sources to collect logs from
+	// Where to collect logs from
 	// +kubebuilder:validation:Required
 	Sources []LogSource `json:"sources"`
 
-	// ElasticsearchConfig defines the Elasticsearch connection details
+	// elasticsearch connection details
 	// +kubebuilder:validation:Required
 	ElasticsearchConfig ElasticsearchConfig `json:"elasticsearchConfig"`
 
-	// FluentbitConfig defines the Fluentbit configuration
+	// fluentbit configuration
 	// +kubebuilder:validation:Optional
 	FluentbitConfig *FluentbitConfig `json:"fluentbitConfig,omitempty"`
 
-	// RemediationRules defines the remediation actions
+	// remediation action
 	// +kubebuilder:validation:Optional
 	RemediationRules []RemediationRule `json:"remediationRules,omitempty"`
 }
 
-// LogSource defines a source to collect logs from
+// source of logs
 type LogSource struct {
-	// Type of log source (pod, deployment, namespace)
+	// type of source I.E. Pod, deployment
 	// +kubebuilder:validation:Enum=pod;deployment;namespace
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
-	// Selector to match resources
+	// match resource
 	// +kubebuilder:validation:Required
 	Selector map[string]string `json:"selector"`
 
-	// Container to collect logs from (optional, if not specified collect from all containers)
+	//container to get logs. can leave empty to collect from all containers
 	// +kubebuilder:validation:Optional
 	Container string `json:"container,omitempty"`
 
-	// Path to logfiles if using a custom log path
+	// path to collect logs
 	// +kubebuilder:validation:Optional
 	Path string `json:"path,omitempty"`
 }
 
-// ElasticsearchConfig defines the Elasticsearch connection details
+// elasticsearch cfg fields
 type ElasticsearchConfig struct {
-	// Host of the Elasticsearch cluster
+	// host
 	// +kubebuilder:validation:Required
 	Host string `json:"host"`
 
-	// Port of the Elasticsearch cluster
+	// Port
 	// +kubebuilder:default=9200
 	// +kubebuilder:validation:Optional
 	Port int32 `json:"port,omitempty"`
 
-	// Index to store logs in
+	// Index to store logs
 	// +kubebuilder:validation:Required
 	Index string `json:"index"`
 
-	// SecretRef for authentication (optional)
+	// SecretRef for Auth
 	// +kubebuilder:validation:Optional
 	SecretRef string `json:"secretRef,omitempty"`
 }
 
-// FluentbitConfig defines optional custom Fluentbit configuration
+// define optional config
 type FluentbitConfig struct {
-	// BufferSize for Fluentbit
+	// BufferSize
 	// +kubebuilder:default="5MB"
 	// +kubebuilder:validation:Optional
 	BufferSize string `json:"bufferSize,omitempty"`
 
-	// FlushInterval for Fluentbit
+	// FlushInterval
 	// +kubebuilder:default=5
 	// +kubebuilder:validation:Optional
 	FlushInterval int32 `json:"flushInterval,omitempty"`
 
-	// Custom parser configuration
+	// Custom parser config
 	// +kubebuilder:validation:Optional
 	Parser string `json:"parser,omitempty"`
 }
 
-// LogRemediationStatus defines the observed state of LogRemediation
+// observed state
 type LogRemediationStatus struct {
-	// Conditions represent the latest available observations of an object's state
+	// last observation of the state
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// FluentbitPods lists the pods running Fluentbit for this remediation
+	// current running pods
 	FluentbitPods []string `json:"fluentbitPods,omitempty"`
 
-	// LastConfigured is the last time the remediation was configured
+	//last configuration change
 	LastConfigured *metav1.Time `json:"lastConfigured,omitempty"`
 
-	// RemediationHistory records all remediation actions
+	// record actions
 	RemediationHistory []RemediationHistoryEntry `json:"remediationHistory,omitempty"`
 
-	// ObservedGeneration is the most recent generation observed for this LogRemediation
+	// most recent generation observed
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Store the timestamp of the most recent log processed in the CR's status
+	// timestamp of last processed log
 	LastProcessedTimestamp *metav1.Time `json:"lastProcessedTimestamp,omitempty"`
 }
 
@@ -122,7 +122,7 @@ type LogRemediationStatus struct {
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 
-// LogRemediation is the Schema for the logremediations API
+// schema for logremediations API
 type LogRemediation struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -133,7 +133,7 @@ type LogRemediation struct {
 
 //+kubebuilder:object:root=true
 
-// LogRemediationList contains a list of LogRemediation
+// list of LogRemediation
 type LogRemediationList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -144,34 +144,34 @@ func init() {
 	SchemeBuilder.Register(&LogRemediation{}, &LogRemediationList{})
 }
 
-// RemediationRule defines a rule to remediate issues based on log patterns
+// rule to remediate issues based on log patterns
 type RemediationRule struct {
-	// ErrorPattern is the regex pattern to match in logs
+	// regex pattern to look for
 	// +kubebuilder:validation:Required
 	ErrorPattern string `json:"errorPattern"`
 
-	// Action to take when pattern is matched (restart, scale, exec, recovery)
+	// Action to take when pattern is matched e.g restart
 	// +kubebuilder:validation:Enum=restart;scale;exec;recovery
 	// +kubebuilder:validation:Required
 	Action string `json:"action"`
 
-	// CooldownPeriod in seconds between remediation actions
+	// cooldown in seconds between remediations
 	// +kubebuilder:default=60
 	// +kubebuilder:validation:Optional
 	CooldownPeriod int32 `json:"cooldownPeriod,omitempty"`
 }
 
-// RemediationHistoryEntry records a remediation action
+// record remediation action
 type RemediationHistoryEntry struct {
-	// Timestamp of the remediation action
+	// Timestamp of remediation action
 	Timestamp metav1.Time `json:"timestamp"`
 
 	// PodName that was remediated
 	PodName string `json:"podName"`
 
-	// Pattern that triggered the remediation
+	// Pattern that triggered remediation
 	Pattern string `json:"pattern"`
 
-	// Action that was taken
+	// Action taken
 	Action string `json:"action"`
 }

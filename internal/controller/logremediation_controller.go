@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"reflect"
@@ -47,11 +47,13 @@ import (
 	"github.com/Masakreman/KubeRescue/internal/metrics"
 )
 
-// LogRemediationReconciler reconciles a LogRemediation object
+// reconcile LogRemediation object
 type LogRemediationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+// Standard rbac configuraion for kubebuilder, with additional rbac for apps and autoscaling
 
 //+kubebuilder:rbac:groups=remediation.kuberescue.io,resources=logremediations,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=remediation.kuberescue.io,resources=logremediations/status,verbs=get;update;patch
@@ -65,39 +67,32 @@ type LogRemediationReconciler struct {
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;patch;update;watch
 //+kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
 
-// Reconcile handles the main reconciliation loop for LogRemediation
 func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Reconciling LogRemediation", "name", req.Name, "namespace", req.Namespace)
 
-	// Fetch the LogRemediation instance
+	//get LogRemediation Instance
 	logRemediation := &remediationv1alpha1.LogRemediation{}
 	err := r.Get(ctx, req.NamespacedName, logRemediation)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Resource is gone, decrease active count
 			metrics.ActiveRemediations.WithLabelValues(req.Namespace).Dec()
-			// Request object not found, could have been deleted
 			logger.Info("LogRemediation resource not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
-		// Error reading the object - requeue the request
 		logger.Error(err, "Failed to get LogRemediation")
 		return ctrl.Result{}, err
 	}
 
-	// If this is a new resource, increment the active count
 	if logRemediation.Status.LastConfigured == nil {
 		metrics.ActiveRemediations.WithLabelValues(req.Namespace).Inc()
 	}
 
-	// Now that we have the object, check if resources need to be reconciled
-	// Only skip resource creation/update if recent and unchanged, but always check logs
+	//only reconcile if needed
 	var skipResourceReconciliation bool
 
 	if logRemediation.Status.LastConfigured != nil {
 		lastReconciled := logRemediation.Status.LastConfigured.Time
-		// If we reconciled resources in the last 2 minutes and no spec change
 		if time.Since(lastReconciled) < time.Minute*2 &&
 			logRemediation.Generation == logRemediation.Status.ObservedGeneration {
 			logger.Info("Skipping resource reconciliation, checking logs only")
@@ -108,7 +103,7 @@ func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Handle finalizers and deletion
 	finalizerName := "kuberescue.io/finalizer"
 	if logRemediation.ObjectMeta.DeletionTimestamp.IsZero() {
-		// Resource is not being deleted, ensure it has our finalizer
+		//resource noot being deleted ensure so make sure it has finalisers
 		if !containsString(logRemediation.ObjectMeta.Finalizers, finalizerName) {
 			logRemediation.ObjectMeta.Finalizers = append(logRemediation.ObjectMeta.Finalizers, finalizerName)
 			if err := r.Update(ctx, logRemediation); err != nil {
@@ -116,14 +111,14 @@ func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 		}
 	} else {
-		// Resource is being deleted
+		//delete resource
 		if containsString(logRemediation.ObjectMeta.Finalizers, finalizerName) {
-			// Run finalization logic
-			if err := r.finalizeLogRemediation(ctx, logRemediation); err != nil {
+			//run finalisers
+			if err := r.finaliseLogRemediation(ctx, logRemediation); err != nil {
 				return ctrl.Result{}, err
 			}
 
-			// Remove finalizer
+			//delete finaliser once finished
 			logRemediation.ObjectMeta.Finalizers = removeString(logRemediation.ObjectMeta.Finalizers, finalizerName)
 			if err := r.Update(ctx, logRemediation); err != nil {
 				return ctrl.Result{}, err
@@ -132,51 +127,41 @@ func (r *LogRemediationReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Only reconcile resources if needed
 	if !skipResourceReconciliation {
-		// Create or update ConfigMap for Fluentbit configuration
+		//create or update fluentbit configmap
 		if err := r.reconcileFluentbitConfigMap(ctx, logRemediation); err != nil {
 			logger.Error(err, "Failed to reconcile Fluentbit ConfigMap")
 			r.updateLogRemediationStatus(ctx, logRemediation, "ConfigMapFailed", "Failed to create or update Fluentbit ConfigMap", metav1.ConditionFalse)
 			return ctrl.Result{RequeueAfter: time.Second * 10}, err
 		}
 
-		// Create or update DaemonSet for Fluentbit
+		//create or update ds for fluentbit
 		if err := r.reconcileFluentbitDaemonSet(ctx, logRemediation); err != nil {
 			logger.Error(err, "Failed to reconcile Fluentbit DaemonSet")
 			r.updateLogRemediationStatus(ctx, logRemediation, "DaemonSetFailed", "Failed to create or update Fluentbit DaemonSet", metav1.ConditionFalse)
 			return ctrl.Result{RequeueAfter: time.Second * 10}, err
 		}
-
-		// Update pod status
 		if err := r.updatePodStatus(ctx, logRemediation); err != nil {
 			logger.Error(err, "Failed to update pod status")
 			return ctrl.Result{RequeueAfter: time.Second * 10}, err
 		}
-
-		// Update successful status
 		r.updateLogRemediationStatus(ctx, logRemediation, "Reconciled", "Successfully reconciled LogRemediation", metav1.ConditionTrue)
 	}
 
-	// Always check for errors and remediate if remediation rules exist
 	if len(logRemediation.Spec.RemediationRules) > 0 {
 		logger.Info("Checking logs for remediation", "rules_count", len(logRemediation.Spec.RemediationRules))
-		if err := r.checkLogsAndRemediate(ctx, logRemediation); err != nil {
+		if err := r.parseLogsAndRemediate(ctx, logRemediation); err != nil {
 			logger.Error(err, "Failed to check logs and remediate")
-			// Don't return error here, just log it
 		}
 	}
 
-	// Requeue more frequently to check for errors to remediate
 	return ctrl.Result{RequeueAfter: time.Minute * 2}, nil
 }
 
-// finalizeLogRemediation handles cleanup when a LogRemediation resource is deleted
-func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
+// cleanup after deletion
+func (r *LogRemediationReconciler) finaliseLogRemediation(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
-	logger.Info("Finalizing LogRemediation", "name", lr.Name, "namespace", lr.Namespace)
-
-	// Delete the DaemonSet if it exists
+	logger.Info("Finalising LogRemediation", "name", lr.Name, "namespace", lr.Namespace)
 	daemonSet := &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-fluentbit", lr.Name),
@@ -187,7 +172,6 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 		return err
 	}
 
-	// Delete the ConfigMap if it exists
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-fluentbit-config", lr.Name),
@@ -198,16 +182,12 @@ func (r *LogRemediationReconciler) finalizeLogRemediation(ctx context.Context, l
 		return err
 	}
 
-	logger.Info("Successfully finalized LogRemediation")
+	logger.Info("Successfully finalised LogRemediation")
 	return nil
 }
 
-// generate configuration for Fluentibit with fixes for multiple instances
 func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alpha1.LogRemediation) string {
-	// Create a unique identifier for this instance
 	instanceID := lr.Name
-
-	// Create a basic service section
 	config := `[SERVICE]
     Flush        1
     Daemon       Off
@@ -219,8 +199,6 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
     Buffer_Size  5MB
 
 `
-
-	// Apply custom settings if provided
 	if lr.Spec.FluentbitConfig != nil {
 		if lr.Spec.FluentbitConfig.BufferSize != "" {
 			config = strings.Replace(config, "Buffer_Size  5MB", fmt.Sprintf("Buffer_Size  %s", lr.Spec.FluentbitConfig.BufferSize), 1)
@@ -230,10 +208,8 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 		}
 	}
 
-	// Build a path pattern that focuses on test applications
-	pathPattern := "/var/log/containers/test*_*_*.log" // Will match testApps: test1, test2, test3, etc.
+	pathPattern := "/var/log/containers/test*_*_*.log"
 
-	// Input configuration with fixed tag format
 	config += fmt.Sprintf(`[INPUT]
     Name            tail
     Path            %s
@@ -245,12 +221,11 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
     Skip_Long_Lines On
     DB              /var/lib/fluent-bit/%s.db
     Read_from_Head  True
-    Ignore_Older    5m  # Don't ignore older logs initially
+    Ignore_Older    5m 
     Exit_On_Eof     false
 
 `, pathPattern, instanceID)
 
-	// Add Kubernetes metadata filter with correct tag matching
 	config += `[FILTER]
     Name                kubernetes
     Match               kube.*
@@ -262,23 +237,15 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
     K8S-Logging.Parser  On
     K8S-Logging.Exclude Off
 
-`
-
-	// No error pattern filtering here - we send everything to Elasticsearch
-	// and filter at query time
-
-	// Add a stdout output for debugging
+` // send everyting to elasticsearch
 	config += `[OUTPUT]
     Name            stdout
     Match           kube.*
     Format          json_lines
 
 `
-
-	// Add Elasticsearch output
 	esConfig := lr.Spec.ElasticsearchConfig
 	hostName := esConfig.Host
-	// Ensure we use the FQDN if a short name is provided
 	if !strings.Contains(hostName, ".") {
 		hostName = fmt.Sprintf("%s.%s.svc.cluster.local", hostName, lr.Namespace)
 	}
@@ -292,7 +259,7 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
     Generate_ID        On
     Suppress_Type_Name On
     HTTP_User          elastic
-    HTTP_Passwd        changeme
+    HTTP_Passwd        changeme 
     Trace_Output       On
     Trace_Error        On
 `, hostName, esConfig.Port, esConfig.Index)
@@ -300,14 +267,11 @@ func (r *LogRemediationReconciler) generateFluentbitConfig(lr *remediationv1alph
 	return config
 }
 
-// reconcileFluentbitConfigMap ensures the ConfigMap exists with the correct configuration
 func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
-
-	// Generate Fluentbit configuration
 	fbConfig := r.generateFluentbitConfig(lr)
 
-	// Define parsers config in a separate variable
+	//definging parsers for Fluentbit
 	parsersConfig := `[PARSER]
     Name   docker
     Format json
@@ -316,7 +280,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
     Time_Keep On
 `
 
-	// Create ConfigMap
+	//init configmap
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-fluentbit-config", lr.Name),
@@ -328,12 +292,11 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
 		},
 	}
 
-	// Set controller reference
 	if err := controllerutil.SetControllerReference(lr, configMap, r.Scheme); err != nil {
 		return err
 	}
 
-	// Create or update ConfigMap
+	//create or update configmap
 	found := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{Name: configMap.Name, Namespace: configMap.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
@@ -342,8 +305,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
 	} else if err != nil {
 		return err
 	}
-
-	// Update if configuration changed
+	//if config changed then update
 	if found.Data["fluent-bit.conf"] != configMap.Data["fluent-bit.conf"] ||
 		found.Data["parsers.conf"] != configMap.Data["parsers.conf"] {
 		logger.Info("Updating Fluentbit ConfigMap", "name", configMap.Name)
@@ -356,31 +318,26 @@ func (r *LogRemediationReconciler) reconcileFluentbitConfigMap(ctx context.Conte
 
 func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
-
-	// Create a hash based on the configuration content rather than time
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      fmt.Sprintf("%s-fluentbit-config", lr.Name),
 		Namespace: lr.Namespace,
 	}, configMap)
 
-	// Default hash if we can't get the ConfigMap
 	configHash := fmt.Sprintf("%s-default", lr.Name)
 
 	if err == nil {
-		// Generate hash based on the ConfigMap data
 		configContent := configMap.Data["fluent-bit.conf"]
-		// Simple hash - in production you might want a more robust hash function
 		configHash = fmt.Sprintf("%s-%d", lr.Name, len(configContent))
 	}
 
-	// Create labels for resources
+	//add labels for fluentbit resources
 	labels := map[string]string{
 		"app":        fmt.Sprintf("%s-fluentbit", lr.Name),
 		"controller": lr.Name,
 	}
 
-	// Create DaemonSet with improved configuration
+	//create or update Fluentbit DaemonSet
 	daemonSet := &appsv1.DaemonSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-fluentbit", lr.Name),
@@ -395,7 +352,6 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 					Annotations: map[string]string{
-						// Add hash annotation to force recreation when config changes
 						"kuberescue.io/config-hash": configHash,
 					},
 				},
@@ -404,7 +360,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 					Containers: []corev1.Container{
 						{
 							Name:  "fluentbit",
-							Image: "fluent/fluent-bit:2.1.10", // Using a stable version
+							Image: "fluent/fluent-bit:2.1.10",
 							Env: []corev1.EnvVar{
 								{
 									Name:  "ES_USER",
@@ -414,24 +370,23 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 									Name:  "ES_PASSWORD",
 									Value: "changeme",
 								},
-								// Add environment variables for unique instance ID
 								{
 									Name:  "FLUENT_INSTANCE",
 									Value: lr.Name,
 								},
 								{
 									Name:  "FLUENT_DB_RESET",
-									Value: configHash, // Use hash to reset DB
+									Value: configHash,
 								},
 							},
 							Resources: corev1.ResourceRequirements{
 								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    *resource.NewMilliQuantity(200, resource.DecimalSI),
-									corev1.ResourceMemory: *resource.NewQuantity(300*1024*1024, resource.BinarySI),
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(500, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(512*1024*1024, resource.BinarySI),
 								},
 								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    *resource.NewMilliQuantity(100, resource.DecimalSI),
-									corev1.ResourceMemory: *resource.NewQuantity(150*1024*1024, resource.BinarySI),
+									corev1.ResourceCPU:    *resource.NewMilliQuantity(200, resource.DecimalSI),
+									corev1.ResourceMemory: *resource.NewQuantity(300*1024*1024, resource.BinarySI),
 								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
@@ -449,7 +404,6 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 									ReadOnly:  true,
 								},
 								{
-									// Store DB in a dedicated volume with instance-specific path
 									Name:      "flb-state",
 									MountPath: "/var/lib/fluent-bit",
 								},
@@ -512,7 +466,6 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 						{
 							Name: "flb-state",
 							VolumeSource: corev1.VolumeSource{
-								// Use an EmptyDir volume with unique hash to avoid conflicts
 								EmptyDir: &corev1.EmptyDirVolumeSource{},
 							},
 						},
@@ -527,10 +480,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 			},
 		},
 	}
-
-	// Add environment variables for Elasticsearch authentication if needed
 	if lr.Spec.ElasticsearchConfig.SecretRef != "" {
-		// Create new env var slice preserving the existing vars
 		envVars := []corev1.EnvVar{
 			{
 				Name: "ES_USER",
@@ -554,7 +504,6 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 					},
 				},
 			},
-			// Preserve the instance ID and DB reset
 			{
 				Name:  "FLUENT_INSTANCE",
 				Value: lr.Name,
@@ -566,13 +515,11 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 		}
 		daemonSet.Spec.Template.Spec.Containers[0].Env = envVars
 	}
-
-	// Set controller reference
 	if err := controllerutil.SetControllerReference(lr, daemonSet, r.Scheme); err != nil {
 		return err
 	}
 
-	// Create or update DaemonSet
+	//create or update DaemonSet
 	found := &appsv1.DaemonSet{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: daemonSet.Name, Namespace: daemonSet.Namespace}, found)
 	if getErr != nil && errors.IsNotFound(getErr) {
@@ -582,14 +529,12 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 		return getErr
 	}
 
-	// Update if template spec changed - force update if the hash changed
-	// This uses deep equality check for the pod spec to detect changes
+	// check for changes and update
 	if !reflect.DeepEqual(found.Spec.Template.Spec, daemonSet.Spec.Template.Spec) ||
 		found.Spec.Template.Annotations["kuberescue.io/config-hash"] != configHash {
 		logger.Info("Updating Fluentbit DaemonSet", "name", daemonSet.Name,
 			"reason", "config changed or spec updated")
 
-		// Update the spec and annotations
 		found.Spec = daemonSet.Spec
 		found.Spec.Template.Annotations = daemonSet.Spec.Template.Annotations
 
@@ -598,10 +543,7 @@ func (r *LogRemediationReconciler) reconcileFluentbitDaemonSet(ctx context.Conte
 
 	return nil
 }
-
-// updatePodStatus updates the status section with information about the running Fluentbit pods
 func (r *LogRemediationReconciler) updatePodStatus(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
-	// List pods matching our label
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(lr.Namespace),
@@ -612,22 +554,18 @@ func (r *LogRemediationReconciler) updatePodStatus(ctx context.Context, lr *reme
 		return err
 	}
 
-	// Extract pod names and update status
+	//extract pod names and update status
 	var podNames []string
 	for _, pod := range podList.Items {
 		podNames = append(podNames, pod.Name)
 	}
-
-	// Update status
 	lr.Status.FluentbitPods = podNames
 	lr.Status.LastConfigured = &metav1.Time{Time: time.Now()}
 
 	return r.Status().Update(ctx, lr)
 }
 
-// updateLogRemediationStatus updates the status condition for the LogRemediation resource
 func (r *LogRemediationReconciler) updateLogRemediationStatus(ctx context.Context, lr *remediationv1alpha1.LogRemediation, reason, message string, status metav1.ConditionStatus) error {
-	// Find or create the Ready condition
 	meta.SetStatusCondition(&lr.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             status,
@@ -636,14 +574,10 @@ func (r *LogRemediationReconciler) updateLogRemediationStatus(ctx context.Contex
 		Reason:             reason,
 		Message:            message,
 	})
-
-	// Add this line:
 	lr.Status.ObservedGeneration = lr.Generation
 
 	return r.Status().Update(ctx, lr)
 }
-
-// Helper functions for finalizers
 func containsString(slice []string, s string) bool {
 	for _, item := range slice {
 		if item == s {
@@ -663,7 +597,7 @@ func removeString(slice []string, s string) []string {
 	return result
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// setup controller
 func (r *LogRemediationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&remediationv1alpha1.LogRemediation{}).
@@ -672,21 +606,20 @@ func (r *LogRemediationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Check for errors and Perform remediation if required
-func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
+func (r *LogRemediationReconciler) parseLogsAndRemediate(ctx context.Context, lr *remediationv1alpha1.LogRemediation) error {
 	logger := log.FromContext(ctx)
 
-	// Start timing the log processing
+	// time the log processing
 	startTime := time.Now()
 	logsProcessed := 0
 	cooldownCount := make(map[string]int)
 
-	// Skip if no remediation rules defined
+	// ignore if no rules present
 	if len(lr.Spec.RemediationRules) == 0 {
 		return nil
 	}
 
-	// Build app label filter from sources to narrow down the search
+	// build an applabel to narrow searching
 	var appLabels []string
 	for _, source := range lr.Spec.Sources {
 		if appLabel, ok := source.Selector["app"]; ok {
@@ -694,19 +627,19 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		}
 	}
 
-	// Get Elasticsearch endpoint
+	// elasticsearch url endpoint
 	esEndpoint := fmt.Sprintf("http://%s:%d/%s/_search",
 		lr.Spec.ElasticsearchConfig.Host,
 		lr.Spec.ElasticsearchConfig.Port,
 		lr.Spec.ElasticsearchConfig.Index)
 
-	// Build query for error patterns
+	// make a query
 	var matchQueries []string
 	for _, rule := range lr.Spec.RemediationRules {
 		matchQueries = append(matchQueries, fmt.Sprintf(`{"match": {"log": "%s"}}`, rule.ErrorPattern))
 	}
 
-	// Build app label filter if we have any
+	// building an applabel
 	var appLabelFilter string
 	if len(appLabels) > 0 {
 		var appFilters []string
@@ -716,34 +649,29 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		appLabelFilter = fmt.Sprintf(`,"must": [{"bool": {"should": [%s]}}]`, strings.Join(appFilters, ","))
 	}
 
-	// Max time window to look back for logs (3 minutes by default)
+	//max lookback time
 	maxLookbackWindow := 3 * time.Minute
 
-	// Determine the time filter start point
+	// get time filter start point
 	var timeFilterStart time.Time
 	if lr.Status.LastProcessedTimestamp != nil {
 		lastProcessed := lr.Status.LastProcessedTimestamp.Time
-		// Use the last processed time if it's within our max window
-		// Otherwise, use the max lookback window to avoid getting stuck in the past
 		if time.Since(lastProcessed) <= maxLookbackWindow {
 			timeFilterStart = lastProcessed
 		} else {
-			// If the last processed time is too far in the past
-			// use a limited window of (e.g 3 Minutes) to avoid getting stuck processing old logs
+			// limited time window to not get stiuck processing logs in past
 			timeFilterStart = time.Now().Add(-maxLookbackWindow)
 			logger.Info("Last processed timestamp is too old, using limited time window",
 				"last_processed", lastProcessed,
 				"using_window_from", timeFilterStart)
 		}
 	} else {
-		// If no last processed timestamp, look back by the max window
 		timeFilterStart = time.Now().Add(-maxLookbackWindow)
 	}
 
-	// Format the time for Elasticsearch
+	// elasticsearch documented way for filtering time
 	timeFilter := timeFilterStart.Format(time.RFC3339)
-
-	// Construct query with time constraints and ascending sort order
+	//qury logs in ascending order
 	query := fmt.Sprintf(`{
         "query": {
             "bool": {
@@ -759,7 +687,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 
 	logger.Info("Querying Elasticsearch", "endpoint", esEndpoint, "timeFilter", timeFilter)
 
-	// Query Elasticsearch
 	req, err := http.NewRequest("POST", esEndpoint, strings.NewReader(query))
 	if err != nil {
 		metrics.LogProcessingErrors.Inc()
@@ -767,9 +694,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Add authentication
 	if lr.Spec.ElasticsearchConfig.SecretRef != "" {
-		// In a real implementation, you would fetch credentials from the secret
 		req.SetBasicAuth("elastic", "changeme")
 	} else {
 		req.SetBasicAuth("elastic", "changeme")
@@ -785,15 +710,12 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return err
 	}
 	defer resp.Body.Close()
-
-	// Read response
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		metrics.LogProcessingErrors.Inc()
 		return err
 	}
 
-	// Check for successful response
 	if resp.StatusCode != http.StatusOK {
 		metrics.LogProcessingErrors.Inc()
 		logger.Error(nil, "Elasticsearch query failed",
@@ -801,8 +723,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			"body", string(body))
 		return fmt.Errorf("elasticsearch query failed with status %s", resp.Status)
 	}
-
-	// Parse response
 	var esResult map[string]interface{}
 	if err := json.Unmarshal(body, &esResult); err != nil {
 		metrics.LogProcessingErrors.Inc()
@@ -810,7 +730,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return err
 	}
 
-	// Extract hits
+	// extracing hits
 	hits, ok := esResult["hits"]
 	if !ok {
 		metrics.LogProcessingErrors.Inc()
@@ -824,8 +744,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		logger.Error(nil, "Expected 'hits' to be a map", "type", fmt.Sprintf("%T", hits))
 		return fmt.Errorf("invalid 'hits' field type in Elasticsearch response")
 	}
-
-	// Check total hits count
 	totalObj, hasTotalHits := hitsMap["total"]
 	if hasTotalHits {
 		totalMap, isMap := totalObj.(map[string]interface{})
@@ -835,8 +753,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			}
 		}
 	}
-
-	// Extract hits list
 	hitsList, ok := hitsMap["hits"]
 	if !ok {
 		metrics.LogProcessingErrors.Inc()
@@ -851,48 +767,35 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		return fmt.Errorf("invalid 'hits.hits' field type in Elasticsearch response")
 	}
 
-	logger.Info("Found log entries matching error patterns", "count", len(hitsArray))
-
-	// If no hits, return early
+	logger.Info("Found log entries matching error-patterns", "count", len(hitsArray))
 	if len(hitsArray) == 0 {
 		return nil
 	}
-
-	// Track processed timestamps to update lastProcessedTimestamp
 	var latestTimestamp time.Time
 
-	// Track active cooldown periods to avoid processing logs that would be ignored
 	cooldownMap := make(map[string]time.Time)
 
-	// Initialize cooldown map from existing remediation history
 	for _, history := range lr.Status.RemediationHistory {
 		for _, rule := range lr.Spec.RemediationRules {
 			if rule.ErrorPattern == history.Pattern {
 				key := fmt.Sprintf("%s:%s", history.Pattern, history.PodName)
 				cooldownExpiry := history.Timestamp.Add(time.Duration(rule.CooldownPeriod) * time.Second)
 				cooldownMap[key] = cooldownExpiry
-
-				// Initialize cooldown counts for metrics
 				actionKey := fmt.Sprintf("%s:%s", rule.Action, lr.Namespace)
 				cooldownCount[actionKey]++
 			}
 		}
 	}
-
-	// Update cooldown metrics
 	for actionNs, count := range cooldownCount {
 		parts := strings.Split(actionNs, ":")
 		if len(parts) == 2 {
 			metrics.RemediationsInCooldown.WithLabelValues(parts[0], parts[1]).Set(float64(count))
 		}
 	}
-
-	// Track number of actions performed
 	actionsPerformed := 0
 
-	// Process hits and perform remediation
 	for _, hitObj := range hitsArray {
-		logsProcessed++ // Count each log entry processed
+		logsProcessed++
 
 		hitMap, ok := hitObj.(map[string]interface{})
 		if !ok {
@@ -903,28 +806,21 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 		if !ok {
 			continue
 		}
-
-		// Extract timestamp
 		var logTimestamp time.Time
 		if timestampRaw, hasTimestamp := source["@timestamp"]; hasTimestamp {
 			if timestampStr, ok := timestampRaw.(string); ok {
 				var parseErr error
 				logTimestamp, parseErr = time.Parse(time.RFC3339, timestampStr)
 				if parseErr != nil {
-					// Try alternative format if RFC3339 fails
 					logTimestamp, parseErr = time.Parse("2006-01-02T15:04:05.000Z", timestampStr)
 					if parseErr != nil {
-						// Default to current time if parsing fails
 						logTimestamp = time.Now()
 					}
 				}
 			}
 		} else {
-			// Default to current time if no timestamp
 			logTimestamp = time.Now()
 		}
-
-		// Skip very old logs (older than our max window)
 		if time.Since(logTimestamp) > maxLookbackWindow {
 			logger.Info("Skipping old log entry outside our time window",
 				"log_time", logTimestamp,
@@ -932,12 +828,10 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			continue
 		}
 
-		// Update latest timestamp we've seen
 		if logTimestamp.After(latestTimestamp) {
 			latestTimestamp = logTimestamp
 		}
 
-		// Extract log message
 		logMsg := ""
 		logPaths := []string{"log", "message", "log_processed"}
 		for _, path := range logPaths {
@@ -949,7 +843,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			}
 		}
 
-		// Check nested kubernetes log
 		if logMsg == "" {
 			if k8s, hasK8s := source["kubernetes"].(map[string]interface{}); hasK8s {
 				if containerLog, hasLog := k8s["log"].(string); hasLog {
@@ -962,17 +855,14 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 			logger.Info("No log message found in document")
 			continue
 		}
-
-		// Extract pod info (name and namespace)
+		//try extractiing metadata using common field names
 		podName := ""
 		namespace := ""
 		var appLabel string
 
-		// Try standard kubernetes format
 		k8sRaw, hasK8s := source["kubernetes"]
 		if hasK8s {
 			if k8s, ok := k8sRaw.(map[string]interface{}); ok {
-				// Try common fields for pod name
 				podNameFields := []string{"pod_name", "pod", "pod_id", "container_name"}
 				for _, field := range podNameFields {
 					if val, has := k8s[field]; has {
@@ -982,8 +872,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 						}
 					}
 				}
-
-				// Try common fields for namespace
 				nsFields := []string{"namespace_name", "namespace", "ns"}
 				for _, field := range nsFields {
 					if val, has := k8s[field]; has {
@@ -994,7 +882,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 					}
 				}
 
-				// Check labels
 				if labels, hasLabels := k8s["labels"].(map[string]interface{}); hasLabels {
 					if val, has := labels["pod-template-hash"]; has && podName == "" {
 						if str, ok := val.(string); ok {
@@ -1006,7 +893,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 							namespace = str
 						}
 					}
-					// Extract app label for metrics
 					if val, has := labels["app"]; has {
 						if str, ok := val.(string); ok {
 							appLabel = str
@@ -1015,60 +901,17 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				}
 			}
 		}
-
-		// Fallbacks for pod/namespace
-		if podName == "" || namespace == "" {
-			// Check metadata
-			if metadataRaw, has := source["metadata"]; has {
-				if metadata, ok := metadataRaw.(map[string]interface{}); ok {
-					if val, has := metadata["pod"]; has && podName == "" {
-						if str, ok := val.(string); ok {
-							podName = str
-						}
-					}
-					if val, has := metadata["namespace"]; has && namespace == "" {
-						if str, ok := val.(string); ok {
-							namespace = str
-						}
-					}
-				}
-			}
-		}
-
-		// More fallbacks for pod name
-		if podName == "" && k8sRaw != nil {
-			if k8s, ok := k8sRaw.(map[string]interface{}); ok {
-				if val, has := k8s["container_name"]; has {
-					if str, ok := val.(string); ok {
-						parts := strings.Split(str, "-")
-						if len(parts) > 1 {
-							podName = strings.Join(parts[:len(parts)-1], "-")
-						} else {
-							podName = str
-						}
-					}
-				}
-			}
-		}
-
-		// Default namespace
 		if namespace == "" {
 			namespace = lr.Namespace
 		}
-
-		// Default app label if not found
 		if appLabel == "" {
-			appLabel = "unknown"
+			appLabel = "novalueprovided"
 		}
-
-		// Last resort - extract pod from log message
 		if podName == "" {
 			podPattern := regexp.MustCompile(`pod[=:]\s*([a-zA-Z0-9-]+)`)
 			if matches := podPattern.FindStringSubmatch(logMsg); len(matches) > 1 {
 				podName = matches[1]
 			}
-
-			// Try app labels
 			if podName == "" && len(appLabels) > 0 && namespace != "" {
 				podList := &corev1.PodList{}
 				if err := r.List(ctx, podList); err != nil {
@@ -1097,8 +940,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				continue
 			}
 		}
-
-		// Now check each remediation rule
 		for _, rule := range lr.Spec.RemediationRules {
 			matched, err := regexp.MatchString(rule.ErrorPattern, logMsg)
 			if err != nil {
@@ -1110,7 +951,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				continue
 			}
 
-			// Increment error pattern occurrence metric
 			metrics.ErrorPatternOccurrences.WithLabelValues(rule.ErrorPattern, namespace, appLabel).Inc()
 
 			logger.Info("Error pattern matched",
@@ -1119,7 +959,7 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				"namespace", namespace,
 				"log_timestamp", logTimestamp)
 
-			// Check cooldown
+			//checking cooldown
 			cooldownKey := fmt.Sprintf("%s:%s", rule.ErrorPattern, podName)
 			if cooldownExpiry, hasCooldown := cooldownMap[cooldownKey]; hasCooldown {
 				if time.Now().Before(cooldownExpiry) {
@@ -1130,37 +970,25 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 					continue
 				}
 			}
-
-			// Check if this log is too old to act on (within time window but older than 1 minute)
+			//verify if log is too old
 			if time.Since(logTimestamp) > time.Minute {
 				logger.Info("Log is older than 1 minute but within window, checking if still relevant",
 					"log_time", logTimestamp,
 					"age", time.Since(logTimestamp))
 
-				// For logs that are a bit old, we should verify if they're still relevant
-				// based on the action type. For example:
-
-				// For "scale" actions, check current scale status
 				if rule.Action == "scale" || rule.Action == "recovery" {
-					// Verify if scaling is still needed by checking the pod's owner's current state
-					// This would involve a check against the current state of the deployment/statefulset
-
-					// For demo purposes, we'll just log and proceed, but in production
-					// you would implement actual state checking here
-					logger.Info("Would verify scaling need here in production")
+					logger.Info("continue")
 				}
 
-				// For "restart" actions, check if pod is already restarted
+				// check if already restarted
 				if rule.Action == "restart" {
-					// Verify if the pod still exists and its start time
 					pod := &corev1.Pod{}
 					err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod)
 
-					// If pod not found or was started after the log timestamp, no need to restart
 					if err != nil || (err == nil && pod.Status.StartTime != nil &&
 						pod.Status.StartTime.After(logTimestamp)) {
 
-						logger.Info("Pod already restarted or doesn't exist, skipping restart action",
+						logger.Info("Pod already restarted or doesn't exist, ignoreing restart action",
 							"pod", podName,
 							"pod_exists", err == nil,
 							"start_time", pod.Status.StartTime)
@@ -1168,18 +996,16 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 					}
 				}
 			}
-
-			// Perform remediation
 			var remediationErr error
 			switch rule.Action {
 			case "restart":
 				remediationErr = r.performPodRestart(ctx, lr, namespace, podName, rule.ErrorPattern)
 			case "scale":
-				remediationErr = r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, false)
+				remediationErr = r.doResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, false)
 			case "recovery":
-				remediationErr = r.performResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, true)
+				remediationErr = r.doResourceScaling(ctx, lr, namespace, podName, rule.ErrorPattern, true)
 			case "exec":
-				logger.Info("Exec remediation not implemented yet")
+				logger.Info("TODO: implement this")
 				continue
 			}
 
@@ -1191,48 +1017,36 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 				continue
 			}
 
-			// Action succeeded
 			metrics.RemediationSuccessTotal.WithLabelValues(rule.Action, namespace).Inc()
 
-			// Update cooldown
 			cooldownExpiry := time.Now().Add(time.Duration(rule.CooldownPeriod) * time.Second)
 			cooldownMap[cooldownKey] = cooldownExpiry
 
-			// Update cooldown metrics
 			actionKey := fmt.Sprintf("%s:%s", rule.Action, namespace)
 			cooldownCount[actionKey]++
 			metrics.RemediationsInCooldown.WithLabelValues(rule.Action, namespace).Set(float64(cooldownCount[actionKey]))
 
 			actionsPerformed++
 
-			// Refetch LogRemediation to get latest status
 			if err := r.Get(ctx, types.NamespacedName{Name: lr.Name, Namespace: lr.Namespace}, lr); err != nil {
 				logger.Error(err, "Failed to refetch LogRemediation")
-				// Continue with stale data
 			}
-
-			// Only process first matching rule
 			break
 		}
 
-		// Limit actions per reconciliation
 		if actionsPerformed >= 3 {
 			logger.Info("Reached maximum remediation actions", "count", actionsPerformed)
 			break
 		}
 	}
 
-	// Update LastProcessedTimestamp
 	if !latestTimestamp.IsZero() {
-		// Add a small buffer to avoid edge cases
 		lr.Status.LastProcessedTimestamp = &metav1.Time{Time: latestTimestamp.Add(time.Second)}
 		if err := r.Status().Update(ctx, lr); err != nil {
 			logger.Error(err, "Failed to update last processed timestamp")
 			return err
 		}
 	}
-
-	// Record log processing metrics
 	metrics.LogsProcessedTotal.Add(float64(logsProcessed))
 	metrics.LogProcessingDuration.WithLabelValues(lr.Namespace).Observe(time.Since(startTime).Seconds())
 
@@ -1240,7 +1054,6 @@ func (r *LogRemediationReconciler) checkLogsAndRemediate(ctx context.Context, lr
 	return nil
 }
 
-// performPodRestart handles restarting a pod with proper owner detection
 func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
 	namespace, podName, errorPattern string) error {
 
@@ -1251,8 +1064,6 @@ func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *re
 
 	logger := log.FromContext(ctx)
 	logger.Info("Performing pod restart remediation", "pod", podName, "namespace", namespace)
-
-	// Get the pod
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod); err != nil {
 		if errors.IsNotFound(err) {
@@ -1261,8 +1072,6 @@ func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *re
 		}
 		return fmt.Errorf("failed to get pod: %w", err)
 	}
-
-	// Delete the pod (it will be recreated by the controller)
 	if err := r.Delete(ctx, pod); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("Pod was already deleted", "pod", podName)
@@ -1272,16 +1081,13 @@ func (r *LogRemediationReconciler) performPodRestart(ctx context.Context, lr *re
 	}
 
 	logger.Info("Pod deleted successfully, will be recreated by controller", "pod", podName)
-
 	metrics.RemediationsTotal.WithLabelValues("restart", errorPattern, namespace).Inc()
 
-	// Record the remediation action
 	return r.recordRemediationAction(ctx, lr, podName, errorPattern, "restart")
 }
 
-// performResourceScaling handles scaling resources with automatic owner detection
-// isScaleDown indicates whether this is a scale-down (recovery) operation
-func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
+// handle scaling
+func (r *LogRemediationReconciler) doResourceScaling(ctx context.Context, lr *remediationv1alpha1.LogRemediation,
 	namespace, podName, errorPattern string, isScaleDown bool) error {
 
 	actionName := "scale"
@@ -1293,8 +1099,6 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 	defer func() {
 		metrics.RemediationLatency.WithLabelValues("scale", namespace).Observe(time.Since(startTime).Seconds())
 	}()
-
-	// Get the pod to determine its owner
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Name: podName, Namespace: namespace}, pod); err != nil {
 		if errors.IsNotFound(err) {
@@ -1304,70 +1108,64 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 		return fmt.Errorf("failed to get pod: %w", err)
 	}
 
-	// Find the owner reference that's a scalable resource
-	ownerKind := ""
-	ownerName := ""
+	resourceKind := ""
+	resourceName := ""
 
 	for _, owner := range pod.OwnerReferences {
 		if owner.Controller != nil && *owner.Controller {
-			// Check if it's a kind we can scale
 			switch owner.Kind {
 			case "ReplicaSet":
-				// For ReplicaSets, we need to find the Deployment that owns it
 				rs := &appsv1.ReplicaSet{}
 				if err := r.Get(ctx, types.NamespacedName{Name: owner.Name, Namespace: namespace}, rs); err != nil {
 					logger.Error(err, "Failed to get ReplicaSet", "name", owner.Name)
 					continue
 				}
-
-				// Find the deployment that owns this ReplicaSet
 				for _, rsOwner := range rs.OwnerReferences {
 					if rsOwner.Kind == "Deployment" && rsOwner.Controller != nil && *rsOwner.Controller {
-						ownerKind = "Deployment"
-						ownerName = rsOwner.Name
+						resourceKind = "Deployment"
+						resourceName = rsOwner.Name
 						break
 					}
 				}
 			case "StatefulSet", "Deployment":
-				ownerKind = owner.Kind
-				ownerName = owner.Name
+				resourceKind = owner.Kind
+				resourceName = owner.Name
 			}
 		}
 
-		if ownerKind != "" {
-			break // Found a scalable owner
+		if resourceKind != "" {
+			break
 		}
 	}
 
-	if ownerKind == "" || ownerName == "" {
+	if resourceKind == "" || resourceName == "" {
 		return fmt.Errorf("could not find a scalable owner for pod %s", podName)
 	}
 
-	logger.Info("Found scalable owner", "kind", ownerKind, "name", ownerName)
+	logger.Info("Found scalable owner", "kind", resourceKind, "name", resourceName)
 
-	// Get current replica count based on owner kind
 	var currentReplicas int32
-	var maxReplicas int32 = 10 // Default max replicas, could be configurable via CRD
-	var minReplicas int32 = 1  // Minimum number of replicas
+	var maxReplicas int32 = 10
+	var minReplicas int32 = 1
 
-	switch ownerKind {
+	switch resourceKind {
 	case "Deployment":
 		deployment := &appsv1.Deployment{}
-		if err := r.Get(ctx, types.NamespacedName{Name: ownerName, Namespace: namespace}, deployment); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, deployment); err != nil {
 			return fmt.Errorf("failed to get deployment: %w", err)
 		}
 
 		if deployment.Spec.Replicas != nil {
 			currentReplicas = *deployment.Spec.Replicas
 		} else {
-			currentReplicas = 1 // Default
+			currentReplicas = 1
 		}
 
-		// Check for HPA and respect its maxReplicas if it exists
+		//check if HPA is used
 		hpaList := &autoscalingv1.HorizontalPodAutoscalerList{}
 		if err := r.List(ctx, hpaList, client.InNamespace(namespace)); err == nil {
 			for _, hpa := range hpaList.Items {
-				if hpa.Spec.ScaleTargetRef.Kind == "Deployment" && hpa.Spec.ScaleTargetRef.Name == ownerName {
+				if hpa.Spec.ScaleTargetRef.Kind == "Deployment" && hpa.Spec.ScaleTargetRef.Name == resourceName {
 					maxReplicas = hpa.Spec.MaxReplicas
 					if hpa.Spec.MinReplicas != nil {
 						minReplicas = *hpa.Spec.MinReplicas
@@ -1383,14 +1181,14 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 
 	case "StatefulSet":
 		statefulSet := &appsv1.StatefulSet{}
-		if err := r.Get(ctx, types.NamespacedName{Name: ownerName, Namespace: namespace}, statefulSet); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: resourceName, Namespace: namespace}, statefulSet); err != nil {
 			return fmt.Errorf("failed to get statefulset: %w", err)
 		}
 
 		if statefulSet.Spec.Replicas != nil {
 			currentReplicas = *statefulSet.Spec.Replicas
 		} else {
-			currentReplicas = 1 // Default
+			currentReplicas = 1
 		}
 	}
 
@@ -1398,41 +1196,32 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 
 	if isScaleDown {
 		actionName = "recovery"
-		// Scale down logic - reduce by 25% of current replicas
 		scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
 		if scaleIncrement < 1 {
 			scaleIncrement = 1
 		}
-
 		newReplicas = currentReplicas - scaleIncrement
 		if newReplicas < minReplicas {
 			newReplicas = minReplicas
 		}
-
-		// Don't do anything if already at minimum
 		if currentReplicas <= minReplicas {
 			logger.Info("Resource is already at minimum replicas, no scaling needed",
-				"kind", ownerKind, "name", ownerName, "currentReplicas", currentReplicas, "minReplicas", minReplicas)
+				"kind", resourceKind, "name", resourceName, "currentReplicas", currentReplicas, "minReplicas", minReplicas)
 
-			// Record no-op action
 			return r.recordRemediationAction(ctx, lr, podName, errorPattern, "recovery:no-op:min")
 		}
 
-		logger.Info("Recovery action: scaling down resource", "kind", ownerKind, "name", ownerName,
+		logger.Info("Recovery action: scaling down resource", "kind", resourceKind, "name", resourceName,
 			"from", currentReplicas, "to", newReplicas)
 	} else {
-		// Scale up logic
-		// If already at max replicas, switch to restart
 		if currentReplicas >= maxReplicas {
 			logger.Info("Resource is already at max replicas, switching to restart remediation",
-				"kind", ownerKind, "name", ownerName, "currentReplicas", currentReplicas, "maxReplicas", maxReplicas)
+				"kind", resourceKind, "name", resourceName, "currentReplicas", currentReplicas, "maxReplicas", maxReplicas)
 
-			// When scaling is maxed out, fall back to restart
+			//restart fallback
 			return r.performPodRestart(ctx, lr, namespace, podName, errorPattern)
 		}
 
-		// Implement progressive scaling
-		// Scale by 25% rounded up, with minimum of 1, to get to max replicas faster for critical issues
 		scaleIncrement := int32(math.Ceil(float64(currentReplicas) * 0.25))
 		if scaleIncrement < 1 {
 			scaleIncrement = 1
@@ -1443,120 +1232,100 @@ func (r *LogRemediationReconciler) performResourceScaling(ctx context.Context, l
 			newReplicas = maxReplicas
 		}
 
-		logger.Info("Scaling up resource", "kind", ownerKind, "name", ownerName,
+		logger.Info("Scaling up resource", "kind", resourceKind, "name", resourceName,
 			"from", currentReplicas, "to", newReplicas)
 	}
 
-	// Apply the scaling based on owner kind
-	switch ownerKind {
+	switch resourceKind {
 	case "Deployment":
 		metrics.RemediationsTotal.WithLabelValues(actionName, errorPattern, namespace).Inc()
-		return r.scaleDeployment(ctx, namespace, ownerName, newReplicas, lr, podName, errorPattern)
+		return r.scaleDeployment(ctx, namespace, resourceName, newReplicas, lr, podName, errorPattern)
 	case "StatefulSet":
 		metrics.RemediationsTotal.WithLabelValues(actionName, errorPattern, namespace).Inc()
-		return r.scaleStatefulSet(ctx, namespace, ownerName, newReplicas, lr, podName, errorPattern)
+		return r.scaleStatefulSet(ctx, namespace, resourceName, newReplicas, lr, podName, errorPattern)
 	}
 
-	return fmt.Errorf("unsupported owner kind: %s", ownerKind)
+	return fmt.Errorf("unsupported owner kind: %s", resourceKind)
 }
 
-// scaleDeployment scales a deployment to the specified number of replicas
+// scale deployment
 func (r *LogRemediationReconciler) scaleDeployment(ctx context.Context, namespace, name string,
 	replicas int32, lr *remediationv1alpha1.LogRemediation, podName, errorPattern string) error {
 
 	logger := log.FromContext(ctx)
 
-	// Get the deployment
 	deployment := &appsv1.Deployment{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, deployment); err != nil {
 		return err
 	}
-
-	// Get current replicas for scaling direction
 	var currentReplicas int32 = 1
 	if deployment.Spec.Replicas != nil {
 		currentReplicas = *deployment.Spec.Replicas
 	}
 
-	// Determine scaling direction
 	direction := "up"
 	if replicas < currentReplicas {
 		direction = "down"
 	}
 
-	// Update replicas
 	deployment.Spec.Replicas = &replicas
-
-	// Apply the update
 	if err := r.Update(ctx, deployment); err != nil {
 		return err
 	}
 
 	logger.Info("Deployment scaled successfully", "name", name, "replicas", replicas)
 
-	// Track scaling operation in metrics
 	metrics.ResourceScalingOperations.WithLabelValues("Deployment", name, namespace, direction).Inc()
 	metrics.ResourceCurrentReplicas.WithLabelValues("Deployment", name, namespace).Set(float64(replicas))
 
-	// Record the action
 	return r.recordRemediationAction(ctx, lr, podName, errorPattern, fmt.Sprintf("scale:%d", replicas))
 }
 
-// scaleStatefulSet scales a statefulset to the specified number of replicas
+// scalestateful set up or down
 func (r *LogRemediationReconciler) scaleStatefulSet(ctx context.Context, namespace, name string,
 	replicas int32, lr *remediationv1alpha1.LogRemediation, podName, errorPattern string) error {
 
 	logger := log.FromContext(ctx)
 
-	// Get the statefulset
 	statefulSet := &appsv1.StatefulSet{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, statefulSet); err != nil {
 		return err
 	}
 
-	// Get current replicas for scaling direction
 	var currentReplicas int32 = 1
 	if statefulSet.Spec.Replicas != nil {
 		currentReplicas = *statefulSet.Spec.Replicas
 	}
 
-	// Determine scaling direction
 	direction := "up"
 	if replicas < currentReplicas {
 		direction = "down"
 	}
 
-	// Update replicas
 	statefulSet.Spec.Replicas = &replicas
-
-	// Apply the update
 	if err := r.Update(ctx, statefulSet); err != nil {
 		return err
 	}
 
-	logger.Info("StatefulSet scaled successfully", "name", name, "replicas", replicas)
+	logger.Info("StatefulSet successfully scaled", "name", name, "replicas", replicas)
 
-	// Track scaling operation in metrics
 	metrics.ResourceScalingOperations.WithLabelValues("StatefulSet", name, namespace, direction).Inc()
 	metrics.ResourceCurrentReplicas.WithLabelValues("StatefulSet", name, namespace).Set(float64(replicas))
 
-	// Record the action
 	return r.recordRemediationAction(ctx, lr, podName, errorPattern, fmt.Sprintf("scale:%d", replicas))
 }
 
-// Record the remediation actions in the CR status
+// record remediation actions in cr status
 func (r *LogRemediationReconciler) recordRemediationAction(ctx context.Context, lr *remediationv1alpha1.LogRemediation, podName, pattern, action string) error {
 
-	// Add a new entry to the RemediationHistory in status
-	entry := remediationv1alpha1.RemediationHistoryEntry{
+	addStatus := remediationv1alpha1.RemediationHistoryEntry{
 		Timestamp: metav1.Now(),
 		PodName:   podName,
 		Pattern:   pattern,
 		Action:    action,
 	}
 
-	lr.Status.RemediationHistory = append(lr.Status.RemediationHistory, entry)
+	lr.Status.RemediationHistory = append(lr.Status.RemediationHistory, addStatus)
 
-	// Update the status
 	return r.Status().Update(ctx, lr)
 }
