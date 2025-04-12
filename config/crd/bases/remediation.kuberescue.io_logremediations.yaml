@@ -24,7 +24,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: LogRemediation is the Schema for the logremediations API
+        description: schema for logremediations API
         properties:
           apiVersion:
             description: |-
@@ -44,55 +44,52 @@ spec:
           metadata:
             type: object
           spec:
-            description: LogRemediationSpec defines the desired state of LogRemediation
+            description: desired state of LogRemediation
             properties:
               elasticsearchConfig:
-                description: ElasticsearchConfig defines the Elasticsearch connection
-                  details
+                description: elasticsearch connection details
                 properties:
                   host:
-                    description: Host of the Elasticsearch cluster
+                    description: host
                     type: string
                   index:
-                    description: Index to store logs in
+                    description: Index to store logs
                     type: string
                   port:
                     default: 9200
-                    description: Port of the Elasticsearch cluster
+                    description: Port
                     format: int32
                     type: integer
                   secretRef:
-                    description: SecretRef for authentication (optional)
+                    description: SecretRef for Auth
                     type: string
                 required:
                 - host
                 - index
                 type: object
               fluentbitConfig:
-                description: FluentbitConfig defines the Fluentbit configuration
+                description: fluentbit configuration
                 properties:
                   bufferSize:
                     default: 5MB
-                    description: BufferSize for Fluentbit
+                    description: BufferSize
                     type: string
                   flushInterval:
                     default: 5
-                    description: FlushInterval for Fluentbit
+                    description: FlushInterval
                     format: int32
                     type: integer
                   parser:
-                    description: Custom parser configuration
+                    description: Custom parser config
                     type: string
                 type: object
               remediationRules:
-                description: RemediationRules defines the remediation actions
+                description: remediation action
                 items:
-                  description: RemediationRule defines a rule to remediate issues
-                    based on log patterns
+                  description: rule to remediate issues based on log patterns
                   properties:
                     action:
-                      description: Action to take when pattern is matched (restart,
-                        scale, exec, recovery)
+                      description: Action to take when pattern is matched e.g restart
                       enum:
                       - restart
                       - scale
@@ -101,11 +98,11 @@ spec:
                       type: string
                     cooldownPeriod:
                       default: 60
-                      description: CooldownPeriod in seconds between remediation actions
+                      description: cooldown in seconds between remediations
                       format: int32
                       type: integer
                     errorPattern:
-                      description: ErrorPattern is the regex pattern to match in logs
+                      description: regex pattern to look for
                       type: string
                   required:
                   - action
@@ -113,24 +110,24 @@ spec:
                   type: object
                 type: array
               sources:
-                description: Sources defines the sources to collect logs from
+                description: Where to collect logs from
                 items:
-                  description: LogSource defines a source to collect logs from
+                  description: source of logs
                   properties:
                     container:
-                      description: Container to collect logs from (optional, if not
-                        specified collect from all containers)
+                      description: container to get logs. can leave empty to collect
+                        from all containers
                       type: string
                     path:
-                      description: Path to logfiles if using a custom log path
+                      description: path to collect logs
                       type: string
                     selector:
                       additionalProperties:
                         type: string
-                      description: Selector to match resources
+                      description: match resource
                       type: object
                     type:
-                      description: Type of log source (pod, deployment, namespace)
+                      description: type of source I.E. Pod, deployment
                       enum:
                       - pod
                       - deployment
@@ -146,11 +143,10 @@ spec:
             - sources
             type: object
           status:
-            description: LogRemediationStatus defines the observed state of LogRemediation
+            description: observed state
             properties:
               conditions:
-                description: Conditions represent the latest available observations
-                  of an object's state
+                description: last observation of the state
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -207,41 +203,38 @@ spec:
                   type: object
                 type: array
               fluentbitPods:
-                description: FluentbitPods lists the pods running Fluentbit for this
-                  remediation
+                description: current running pods
                 items:
                   type: string
                 type: array
               lastConfigured:
-                description: LastConfigured is the last time the remediation was configured
+                description: last configuration change
                 format: date-time
                 type: string
               lastProcessedTimestamp:
-                description: Store the timestamp of the most recent log processed
-                  in the CR's status
+                description: timestamp of last processed log
                 format: date-time
                 type: string
               observedGeneration:
-                description: ObservedGeneration is the most recent generation observed
-                  for this LogRemediation
+                description: most recent generation observed
                 format: int64
                 type: integer
               remediationHistory:
-                description: RemediationHistory records all remediation actions
+                description: record actions
                 items:
-                  description: RemediationHistoryEntry records a remediation action
+                  description: record remediation action
                   properties:
                     action:
-                      description: Action that was taken
+                      description: Action taken
                       type: string
                     pattern:
-                      description: Pattern that triggered the remediation
+                      description: Pattern that triggered remediation
                       type: string
                     podName:
                       description: PodName that was remediated
                       type: string
                     timestamp:
-                      description: Timestamp of the remediation action
+                      description: Timestamp of remediation action
                       format: date-time
                       type: string
                   required:
