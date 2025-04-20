@@ -1,0 +1,124 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test3-service-cascade-app
+  labels:
+    app: test3-service-cascade-app
+    test: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test3-service-cascade-app
+  template:
+    metadata:
+      labels:
+        app: test3-service-cascade-app
+    spec:
+      containers:
+      - name: service-simulator
+        image: python:3.9-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          cat > /app.py << 'EOF'
+          import time
+          import random
+          import logging
+          import json
+          from datetime import datetime
+
+          # Configure logging
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger()
+
+          # Simulate services
+          services = {
+              "auth-service": {"status": "healthy", "dependencies": []},
+              "database-service": {"status": "healthy", "dependencies": []},
+              "cache-service": {"status": "healthy", "dependencies": ["database-service"]},
+              "api-gateway": {"status": "healthy", "dependencies": ["auth-service", "cache-service"]},
+              "frontend-service": {"status": "healthy", "dependencies": ["api-gateway"]}
+          }
+
+          def log_service_status():
+              status_json = json.dumps({s: services[s]["status"] for s in services})
+              logger.info(f"Services status: {status_json}")
+
+          def check_dependencies(service_name):
+              # Check if any dependencies are unhealthy
+              for dep in services[service_name]["dependencies"]:
+                  if services[dep]["status"] != "healthy":
+                      return False
+              return True
+
+          def heal_service(service_name):
+              if random.random() < 0.7:  # 70% chance of healing
+                  services[service_name]["status"] = "healthy"
+                  logger.info(f"SERVICE_HEALED {service_name} recovered automatically")
+                  return True
+              return False
+
+          def trigger_random_failure():
+              # Select a random service to fail
+              failed_service = random.choice(list(services.keys()))
+              services[failed_service]["status"] = "failed"
+              
+              # Log the failure with different severity based on the service
+              if failed_service in ["auth-service", "database-service"]:
+                  logger.error(f"CRITICAL_SERVICE_FAILURE {failed_service} is down, core functionality impacted")
+              else:
+                  logger.warning(f"SERVICE_DEGRADED {failed_service} is experiencing issues")
+              
+              # Propagate failures through dependencies
+              for service, details in services.items():
+                  if failed_service in details["dependencies"] and services[service]["status"] == "healthy":
+                      services[service]["status"] = "degraded"
+                      logger.warning(f"CASCADE_FAILURE {service} degraded due to dependency on {failed_service}")
+
+          def check_system_health():
+              # Count failed and degraded services
+              failed = sum(1 for s in services.values() if s["status"] == "failed")
+              degraded = sum(1 for s in services.values() if s["status"] == "degraded")
+              
+              # If too many services are affected, trigger a critical alert
+              if failed > 1 or (failed + degraded) > 3:
+                  logger.error(f"SYSTEM_WIDE_FAILURE Multiple services affected ({failed} failed, {degraded} degraded)")
+                  return False
+              return True
+
+          # Main loop
+          failure_countdown = random.randint(5, 15)  # Trigger first failure after some time
+          healing_attempts = 0
+
+          while True:
+              # Simulate normal operation
+              log_service_status()
+              
+              # Update failure countdown
+              failure_countdown -= 1
+              
+              # Try to heal services
+              for service_name in list(services.keys()):
+                  if services[service_name]["status"] != "healthy":
+                      if heal_service(service_name):
+                          healing_attempts = 0
+                      else:
+                          healing_attempts += 1
+              
+              # If too many healing attempts failed, log critical error
+              if healing_attempts > 5:
+                  logger.error("PERSISTENT_SERVICE_FAILURE System unable to self-heal after multiple attempts")
+                  healing_attempts = 0  # Reset counter
+              
+              # Check if it's time to trigger a new failure
+              if failure_countdown <= 0:
+                  trigger_random_failure()
+                  check_system_health()
+                  failure_countdown = random.randint(10, 30)  # Set next failure time
+              
+              time.sleep(3)
+          EOF
+          
+          python /app.py

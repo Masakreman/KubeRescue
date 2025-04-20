@@ -1,135 +1,113 @@
-# controller
-// TODO(user): Add simple overview of use/purpose
+# KubeRescue
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+KubeRescue is an automated remediation system for Kubernetes applications that detects and fixes common failures by monitoring application logs.
+
+## Overview
+
+KubeRescue watches your application logs for error patterns and automatically performs remediation actions like restarting pods or scaling deployments. It helps reduce downtime and manual intervention for common failure scenarios.
+
+Key features:
+- Log pattern-based error detection
+- Automatic remediation actions (restart, scale up/down)
+- Cooldown periods to prevent remediation loops
+- Prometheus metrics for monitoring remediation actions
+- Grafana dashboards for visualizing error patterns and remediation history
+
+## How It Works
+
+1. KubeRescue deploys Fluent Bit as a DaemonSet to collect container logs
+2. Logs are sent to Elasticsearch for storage and querying
+3. The controller periodically checks for error patterns in logs
+4. When a pattern matches, it triggers the configured remediation action
+5. Actions and their results are recorded in the controller's status
 
 ## Getting Started
 
 ### Prerequisites
-- go version v1.23.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- Kubernetes cluster (v1.23+)
+- kubectl configured to access your cluster
+- Elasticsearch instance for log storage
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+### Installation
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/controller:tag
-```
-
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
-
-```sh
+# Install the CRDs
 make install
+
+# Deploy the controller
+make deploy IMG=masakreman/kuberescue-controller:latest
+
+# Monitor the controller logs
+kubectl logs -f -n controller-system controller-controller-manager-xxxxx
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+### Basic Usage
 
-```sh
-make deploy IMG=<some-registry>/controller:tag
+Create a LogRemediation resource that defines:
+- Which applications to monitor (via label selectors)
+- Error patterns to match in logs
+- Remediation actions for each pattern
+
+Example:
+
+```yaml
+apiVersion: remediation.kuberescue.io/v1alpha1
+kind: LogRemediation
+metadata:
+  name: db-error-remediation
+spec:
+  sources:
+  - type: deployment
+    selector:
+      app: my-app
+  elasticsearchConfig:
+    host: elasticsearch.default.svc
+    port: 9200
+    index: kubernetes-logs
+  remediationRules:
+  - errorPattern: "CRITICAL_DB_CONNECTION_FAILED"
+    action: restart
+    cooldownPeriod: 60  
+  - errorPattern: "HIGH_MEMORY_USAGE"
+    action: scale
+    cooldownPeriod: 120 
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+## Available Remediation Actions
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+- **restart**: Restarts the pod where the error was detected
+- **scale**: Increases the replica count of the deployment/statefulset
+- **recovery**: Decreases the replica count (used after a scaling event)
 
-```sh
-kubectl apply -k config/samples/
-```
+## Monitoring
 
->**NOTE**: Ensure that the samples has default values to test it out.
+KubeRescue exposes Prometheus metrics for monitoring its operations:
+- Error pattern occurrences
+- Remediation actions taken
+- Success/failure rates
+- Current resource states
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+### Grafana Dashboards
 
-```sh
-kubectl delete -k config/samples/
-```
+The project includes pre-built Grafana dashboards:
+- KubeRescue Overview
+- Error Pattern Analysis
+- Application Performance
 
-**Delete the APIs(CRDs) from the cluster:**
+## Configuration Tips
 
-```sh
-make uninstall
-```
+1. Start with longer cooldown periods to avoid excessive remediation
+2. Use specific error patterns to avoid false positives
+3. Test patterns on non-critical applications first
+4. For scaling actions, consider setting up HPA thresholds as well
 
-**UnDeploy the controller from the cluster:**
+## Troubleshooting
 
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/controller:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/controller/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+Common issues:
+- **No logs in Elasticsearch**: Check Fluent Bit pods are running and the connection to Elasticsearch is working
+- **No remediation actions**: Verify error patterns match your application logs
+- **Too many remediation actions**: Increase the cooldown period
 
 ## License
 
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Copyright 2025. Licensed under the Apache License, Version 2.0.

@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test4-traffic-spike-app
+  labels:
+    app: test4-traffic-spike-app
+    test: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test4-traffic-spike-app
+  template:
+    metadata:
+      labels:
+        app: test4-traffic-spike-app
+    spec:
+      containers:
+      - name: traffic-simulator
+        image: python:3.9-slim
+        resources:
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+        command:
+        - /bin/bash
+        - -c
+        - |
+          cat > /app.py << 'EOF'
+          import time
+          import random
+          import logging
+          import socket
+          
+          # Configure logging
+          logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+          logger = logging.getLogger()
+          
+          hostname = socket.gethostname()
+          
+          def log_standard_error(severity, message):
+              """Log in a standard format that works with any log parser"""
+              if severity == "error":
+                  logger.error(f"ERROR {message}")
+              elif severity == "warning":
+                  logger.warning(f"WARNING {message}")
+              else:
+                  logger.info(f"INFO {message}")
+          
+          def simulate_traffic_spike():
+              # Phase 1: Traffic warning
+              log_standard_error("warning", f"Traffic increasing on {hostname}, CPU 75%")
+              time.sleep(10)
+              
+              # Phase 2: Scale trigger - high traffic error (limited occurrences)
+              for i in range(3):  # Only trigger 3 scale-ups instead of unlimited
+                  log_standard_error("error", f"High traffic on {hostname}, service degrading, CPU {80 + i*5}%")
+                  time.sleep(30)  # Longer pause between scale-ups to allow system to adjust
+              
+              # Phase 3: Restart trigger - only if still under high load
+              # 50% chance to enter critical state, otherwise go directly to recovery
+              if random.random() < 0.5:
+                  log_standard_error("error", f"CRITICAL Service overloaded on {hostname}, CPU 95%")
+                  time.sleep(60)  # Longer pause to ensure restart completes
+              
+              # Phase 4: Recovery trigger - ensure we send multiple recovery messages
+              # Add a significant quiet period before starting recovery
+              # This ensures all scale-up actions are completed before starting recovery
+              time.sleep(90)  # 1.5 minute quiet period with no logs at all
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 65%")
+              time.sleep(60)  # Longer time between messages to ensure they're processed
+              
+              # Additional recovery log for continued scale-down
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 45%")
+              time.sleep(60)
+              
+              # Final recovery to minimum
+              log_standard_error("info", f"RECOVERY Traffic normalizing on {hostname}, CPU 30%")
+              time.sleep(30)
+              
+              # Stable state - ensure long enough period of stability before next spike
+              for i in range(5):
+                  log_standard_error("info", f"Service stable on {hostname}, CPU 25%")
+                  time.sleep(10)
+          
+          # Main loop - longer interval between spikes to allow full recovery
+          while True:
+              logger.info(f"Normal traffic on {hostname}, CPU 30%")
+              time.sleep(15)
+              
+              # Simulate a traffic spike
+              simulate_traffic_spike()
+              
+              # Quiet period between cycles - longer than before
+              quiet_period = 300  # 5 minutes
+              for i in range(quiet_period // 15):
+                  logger.info(f"Normal traffic on {hostname}, CPU 30% - quiet period")
+                  time.sleep(15)
+          EOF
+          
+          python /app.py
