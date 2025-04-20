@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: delete-old-logs
+spec:
+  schedule: "0 * * * *"  # Runs every hour
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: delete-logs
+            image: curlimages/curl:latest  
+            command:
+            - /bin/sh
+            - -c
+            - |
+              curl -X POST "http://elasticsearch.default.svc.cluster.local:9200/kubernetes-logs/_delete_by_query" -H 'Content-Type: application/json' -d '
+              {
+                "query": {
+                  "range": {
+                    "@timestamp": {
+                      "lt": "now-1h/h"
+                    }
+                  }
+                }
+              }'
+          restartPolicy: OnFailure
